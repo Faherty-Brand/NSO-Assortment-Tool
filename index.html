@@ -3465,13 +3465,25 @@
         const handleTest = async () => {
           setTestStatus('testing');
           try {
-            const rows = await sheetsAPI.read(settings.sheetId, settings.apiKey, 'projects!A1:A1');
+            if (!settings.sheetId) { setTestStatus('error: Sheet ID is empty'); return; }
+            if (!settings.apiKey) { setTestStatus('error: API Key is empty'); return; }
+            const testUrl = 'https://sheets.googleapis.com/v4/spreadsheets/' + settings.sheetId + '/values/projects!A1:A1?key=' + settings.apiKey;
+            console.log('Testing URL:', testUrl);
+            const res = await fetch(testUrl);
+            const body = await res.text();
+            console.log('Response status:', res.status, 'Body:', body);
+            if (!res.ok) {
+              const errData = JSON.parse(body);
+              setTestStatus('error: ' + (errData.error?.message || res.status + ' ' + res.statusText));
+              return;
+            }
             setTestStatus('success');
             saveSettings(settings);
             setIsConnected(true);
             setTimeout(() => setTestStatus(''), 3000);
           } catch (e) {
-            setTestStatus('error: ' + e.message);
+            console.error('Test connection error:', e);
+            setTestStatus('error: ' + e.message + ' — Check browser console (F12) for details');
           }
         };
 
