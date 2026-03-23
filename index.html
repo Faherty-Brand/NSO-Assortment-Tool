@@ -2828,82 +2828,33 @@
       );
     };
 
+
     // ============================================
-    // STORAGE HELPERS (Google Sheets API backend)
+    // STORAGE HELPERS (Google Apps Script backend — no API key needed)
     // ============================================
 
     const SETTINGS_KEY = 'faherty_nso_settings';
 
     const getSettings = () => {
-      try {
-        return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-      } catch { return {}; }
+      try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; }
     };
 
     const saveSettings = (settings) => {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     };
 
-    // Google Sheets API helpers
-    const sheetsAPI = {
-      baseUrl: 'https://sheets.googleapis.com/v4/spreadsheets',
-
-      async read(sheetId, apiKey, range) {
-        const url = `${this.baseUrl}/${sheetId}/values/${encodeURIComponent(range)}?key=${apiKey}`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Sheets read failed: ${res.status} ${res.statusText}`);
-        const data = await res.json();
-        return data.values || [];
-      },
-
-      async write(sheetId, apiKey, range, values) {
-        const url = `${this.baseUrl}/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW&key=${apiKey}`;
-        const res = await fetch(url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ range, values }),
-        });
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Sheets write failed: ${res.status} — ${errText}`);
-        }
-        return await res.json();
-      },
-
-      async append(sheetId, apiKey, range, values) {
-        const url = `${this.baseUrl}/${sheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS&key=${apiKey}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ range, values }),
-        });
-        if (!res.ok) throw new Error(`Sheets append failed: ${res.status}`);
-        return await res.json();
-      },
-
-      async clearRow(sheetId, apiKey, range) {
-        const url = `${this.baseUrl}/${sheetId}/values/${encodeURIComponent(range)}:clear?key=${apiKey}`;
-        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-        if (!res.ok) throw new Error(`Sheets clear failed: ${res.status}`);
-      },
-    };
-
-    // NOTE: Google Sheets API with just an API key is READ-ONLY for public sheets.
-    // For read+write, we need OAuth or a service account.
-    // Simplest approach: use Google Apps Script as a proxy (no OAuth needed by end users).
-    // The tool will try Apps Script first, fall back to direct API for reads.
-
-    // Apps Script Web App proxy — handles all writes
-    let appsScriptUrl = '';
-
     const sheetsStorage = {
       async loadAll() {
-        const { sheetId, apiKey, scriptUrl } = getSettings();
-        if (!sheetId || !apiKey) return [];
+        const { sheetId, scriptUrl } = getSettings();
+        if (!sheetId || !scriptUrl) return [];
         try {
-          const rows = await sheetsAPI.read(sheetId, apiKey, 'projects!A:F');
-          if (rows.length <= 1) return []; // only header row
-          return rows.slice(1).map(row => {
+          const url = scriptUrl + '?action=read&sheetId=' + encodeURIComponent(sheetId);
+          const res = await fetch(url);
+          const json = await res.json();
+          if (json.error) throw new Error(json.error);
+          const rows = json.data || [];
+          if (rows.length <= 1) return [];
+          return rows.slice(1).map(function(row) {
             try {
               return {
                 id: row[0] || '',
@@ -2913,7 +2864,7 @@
                 updatedAt: row[4] || '',
                 appData: row[5] ? JSON.parse(row[5]) : makeBlankAppData(),
               };
-            } catch { return null; }
+            } catch(e) { return null; }
           }).filter(Boolean);
         } catch (e) {
           console.error('Failed to load from Sheets:', e);
@@ -2922,24 +2873,24 @@
       },
 
       async save(projectId, appData) {
-        const { sheetId, apiKey, scriptUrl } = getSettings();
+        const { sheetId, scriptUrl } = getSettings();
         if (!sheetId || !scriptUrl) throw new Error('Not connected');
         const storeName = appData.proFormaData?.newStoreName || 'Unnamed Store';
         const now = new Date().toISOString();
         const status = getProjectStatus(appData);
-        const payload = {
-          action: 'save',
-          sheetId,
-          projectId,
-          rowData: [projectId, storeName, status, '', now, JSON.stringify(appData)],
-        };
         const res = await fetch(scriptUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            action: 'save',
+            sheetId: sheetId,
+            projectId: projectId,
+            rowData: [projectId, storeName, status, '', now, JSON.stringify(appData)],
+          }),
         });
-        if (!res.ok) throw new Error('Save failed: ' + res.status);
-        return await res.json();
+        const json = await res.json();
+        if (json.error) throw new Error(json.error);
+        return json;
       },
 
       async delete(projectId) {
@@ -2948,16 +2899,23 @@
         const res = await fetch(scriptUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'delete', sheetId, projectId }),
+          body: JSON.stringify({ action: 'delete', sheetId: sheetId, projectId: projectId }),
         });
-        if (!res.ok) throw new Error('Delete failed');
+        const json = await res.json();
+        if (json.error) throw new Error(json.error);
+      },
+
+      async ping() {
+        const { scriptUrl } = getSettings();
+        if (!scriptUrl) throw new Error('No Script URL');
+        const res = await fetch(scriptUrl + '?action=ping');
+        const json = await res.json();
+        if (!json.success) throw new Error('Ping failed');
+        return true;
       },
     };
 
-    // Backward-compatible sync wrappers (used by Dashboard + App)
-    // These work with both localStorage (offline) and Sheets (online)
     const loadAllProjects = () => {
-      // Return cached data synchronously for initial render
       try {
         const raw = localStorage.getItem('faherty_nso_cache');
         return raw ? JSON.parse(raw) : [];
@@ -2974,16 +2932,13 @@
       const now = new Date().toISOString();
       const idx = projects.findIndex(p => p.id === projectId);
       const saveData = {
-        id: projectId,
-        storeName,
+        id: projectId, storeName,
         status: getProjectStatus(appData),
         createdAt: idx >= 0 ? projects[idx].createdAt : now,
-        updatedAt: now,
-        appData,
+        updatedAt: now, appData,
       };
       if (idx >= 0) { projects[idx] = saveData; } else { projects.push(saveData); }
       saveAllProjects(projects);
-      // Also save to Sheets async (fire and forget)
       const { scriptUrl } = getSettings();
       if (scriptUrl) {
         sheetsStorage.save(projectId, appData).catch(e => console.error('Sheets save error:', e));
@@ -3363,7 +3318,7 @@
       const [currentStep, setCurrentStep] = useState(1);
       const [saveStatus, setSaveStatus] = useState('');
       const [appData, setAppData] = useState(makeBlankAppData());
-      const [isConnected, setIsConnected] = useState(!!getSettings().sheetId);
+      const [isConnected, setIsConnected] = useState(!!getSettings().scriptUrl);
       const [syncStatus, setSyncStatus] = useState('');
 
       // Sync from Sheets on mount and when returning to dashboard
@@ -3465,25 +3420,20 @@
         const handleTest = async () => {
           setTestStatus('testing');
           try {
+            if (!settings.scriptUrl) { setTestStatus('error: Apps Script URL is empty'); return; }
             if (!settings.sheetId) { setTestStatus('error: Sheet ID is empty'); return; }
-            if (!settings.apiKey) { setTestStatus('error: API Key is empty'); return; }
-            const testUrl = 'https://sheets.googleapis.com/v4/spreadsheets/' + settings.sheetId + '/values/projects!A1:A1?key=' + settings.apiKey;
-            console.log('Testing URL:', testUrl);
-            const res = await fetch(testUrl);
-            const body = await res.text();
-            console.log('Response status:', res.status, 'Body:', body);
-            if (!res.ok) {
-              const errData = JSON.parse(body);
-              setTestStatus('error: ' + (errData.error?.message || res.status + ' ' + res.statusText));
-              return;
-            }
-            setTestStatus('success');
+            // Save settings first so ping/loadAll can read them
             saveSettings(settings);
+            await sheetsStorage.ping();
+            setTestStatus('success');
             setIsConnected(true);
+            // Try loading data
+            const projects = await sheetsStorage.loadAll();
+            if (projects.length > 0) saveAllProjects(projects);
             setTimeout(() => setTestStatus(''), 3000);
           } catch (e) {
-            console.error('Test connection error:', e);
-            setTestStatus('error: ' + e.message + ' — Check browser console (F12) for details');
+            console.error('Connection test error:', e);
+            setTestStatus('error: ' + e.message);
           }
         };
 
@@ -3491,21 +3441,18 @@
           <div className="min-h-screen bg-gray-100 flex items-center justify-center p-8">
             <div className="bg-white rounded-xl shadow-lg p-8 w-full max-w-lg">
               <h2 className="text-xl font-bold text-gray-800 mb-2">Connect to Google Sheets</h2>
-              <p className="text-sm text-gray-500 mb-6">Enter your Google Sheet ID and API Key to enable real-time shared data.</p>
+              <p className="text-sm text-gray-500 mb-6">Only 2 things needed — no API key required.</p>
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">Google Sheet ID</label>
-                  <input type="text" value={settings.sheetId || ''} onChange={(e) => setLocalSettings({ ...settings, sheetId: e.target.value.trim() })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="From the sheet URL: /d/THIS_PART/edit" />
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">1. Google Sheet ID</label>
+                  <input type="text" value={settings.sheetId || ''} onChange={(e) => setLocalSettings({ ...settings, sheetId: e.target.value.trim() })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="The long string from your sheet URL" />
+                  <p className="text-xs text-gray-400 mt-1">From: docs.google.com/spreadsheets/d/<strong>THIS_PART</strong>/edit</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">Google Cloud API Key</label>
-                  <input type="text" value={settings.apiKey || ''} onChange={(e) => setLocalSettings({ ...settings, apiKey: e.target.value.trim() })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="AIza..." />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">Apps Script Web App URL</label>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">2. Apps Script Web App URL</label>
                   <input type="text" value={settings.scriptUrl || ''} onChange={(e) => setLocalSettings({ ...settings, scriptUrl: e.target.value.trim() })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" placeholder="https://script.google.com/macros/s/.../exec" />
-                  <p className="text-xs text-gray-400 mt-1">Required for saving. See setup guide for instructions.</p>
+                  <p className="text-xs text-gray-400 mt-1">From deploying the Apps Script backend</p>
                 </div>
 
                 <div className="flex items-center gap-3 pt-2">
