@@ -3541,7 +3541,75 @@
       const [currentStep, setCurrentStep] = useState(1);
       const [saveStatus, setSaveStatus] = useState('');
       const [appData, setAppData] = useState(makeBlankAppData());
+      const [userName, setUserName] = useState(localStorage.getItem('faherty_nso_username') || '');
+      const [lockWarning, setLockWarning] = useState('');
+      const [isLocked, setIsLocked] = useState(false);
+      const lockIntervalRef = useRef(null);
 
+      // Ask for name on first visit
+      if (!userName && view !== 'dashboard') {
+        const name = prompt('Enter your name (for edit tracking):');
+        if (name) {
+          localStorage.setItem('faherty_nso_username', name.trim());
+          setUserName(name.trim());
+        }
+      }
+
+      // Acquire lock when opening a project
+      const acquireLock = async (projectId) => {
+        if (!userName) {
+          const name = prompt('Enter your name (for edit tracking):');
+          if (name) { localStorage.setItem('faherty_nso_username', name.trim()); setUserName(name.trim()); }
+          else return false;
+        }
+        const url = getScriptUrl();
+        if (!url) return true; // no backend, allow editing
+        try {
+          const body = JSON.stringify({ action: 'lock', projectId, userName: userName || localStorage.getItem('faherty_nso_username') });
+          const blob = new Blob([body], { type: 'text/plain' });
+          navigator.sendBeacon(url, blob);
+          // We can't get the response from sendBeacon, so we'll check locks after
+          return true;
+        } catch(e) { return true; }
+      };
+
+      // Release lock when leaving a project
+      const releaseLock = (projectId) => {
+        const url = getScriptUrl();
+        if (!url || !projectId) return;
+        const body = JSON.stringify({ action: 'unlock', projectId, userName: userName || localStorage.getItem('faherty_nso_username') });
+        const blob = new Blob([body], { type: 'text/plain' });
+        navigator.sendBeacon(url, blob);
+        if (lockIntervalRef.current) { clearInterval(lockIntervalRef.current); lockIntervalRef.current = null; }
+      };
+
+      // Refresh lock every 5 minutes to keep it alive
+      const startLockRefresh = (projectId) => {
+        if (lockIntervalRef.current) clearInterval(lockIntervalRef.current);
+        lockIntervalRef.current = setInterval(() => {
+          acquireLock(projectId);
+        }, 5 * 60 * 1000);
+      };
+
+      // Check locks for a project and show warning
+      const checkLocks = async (projectId) => {
+        const url = getScriptUrl();
+        if (!url) return;
+        try {
+          const json = await appsFetch(url + '?action=getLocks');
+          if (json.success && json.locks && json.locks[projectId]) {
+            const lock = json.locks[projectId];
+            const currentUser = userName || localStorage.getItem('faherty_nso_username');
+            if (lock.userName !== currentUser) {
+              setLockWarning(lock.userName + ' is currently editing this project. Your changes may be overwritten.');
+              setIsLocked(true);
+              return;
+            }
+          }
+          setLockWarning('');
+          setIsLocked(false);
+        } catch(e) { /* ignore lock check failures */ }
+      };
 
       const handleOpenProject = (projectId) => {
         const projects = loadAllProjects();
@@ -3551,6 +3619,9 @@
           setActiveProjectId(projectId);
           setCurrentStep(1);
           setView('project');
+          acquireLock(projectId);
+          startLockRefresh(projectId);
+          setTimeout(() => checkLocks(projectId), 3000);
         }
       };
 
@@ -3561,13 +3632,29 @@
         setActiveProjectId(newId);
         setCurrentStep(1);
         setView('project');
+        acquireLock(newId);
+        startLockRefresh(newId);
       };
 
       const handleBackToDashboard = () => {
-        if (activeProjectId) { doSave(); }
+        if (activeProjectId) {
+          doSave();
+          releaseLock(activeProjectId);
+        }
+        setLockWarning('');
+        setIsLocked(false);
         setView('dashboard');
         setActiveProjectId(null);
       };
+
+      // Release lock on page unload
+      useEffect(() => {
+        const handleUnload = () => {
+          if (activeProjectId) releaseLock(activeProjectId);
+        };
+        window.addEventListener('beforeunload', handleUnload);
+        return () => window.removeEventListener('beforeunload', handleUnload);
+      }, [activeProjectId, userName]);
 
       const doSave = useCallback(() => {
         if (!activeProjectId) return;
@@ -3702,6 +3789,15 @@
 
           {/* Main Content */}
           <div className="ml-64 flex-1 p-8">
+            {lockWarning && (
+              <div className="mb-4 p-3 bg-yellow-50 border border-yellow-300 rounded-lg flex items-center gap-3">
+                <span className="text-yellow-600 text-lg">⚠️</span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-yellow-800">{lockWarning}</p>
+                  <p className="text-xs text-yellow-600 mt-0.5">Changes you make may not be saved if the other person saves after you.</p>
+                </div>
+              </div>
+            )}
             <div className="max-w-6xl mx-auto">
               {currentStep === 1 && <Step1 onNext={handleNextWithSave} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 2 && <Step2 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
