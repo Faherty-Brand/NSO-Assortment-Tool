@@ -2831,24 +2831,66 @@
 
 
     // ============================================
-    // STORAGE HELPERS (localStorage)
+    // STORAGE HELPERS (Google Apps Script backend + localStorage cache)
     // ============================================
 
-    const STORAGE_KEY = 'faherty_nso_projects';
+    // The Apps Script URL is stored in localStorage after first setup
+    const SCRIPT_URL_KEY = 'faherty_nso_script_url';
+    const CACHE_KEY = 'faherty_nso_cache';
 
+    const getScriptUrl = () => localStorage.getItem(SCRIPT_URL_KEY) || '';
+    const setScriptUrl = (url) => localStorage.setItem(SCRIPT_URL_KEY, url);
+
+    // Local cache for instant rendering
     const loadAllProjects = () => {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        return raw ? JSON.parse(raw) : [];
-      } catch { return []; }
+      try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { return []; }
     };
-
     const saveAllProjects = (projects) => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
-      } catch (e) { console.error('Save failed:', e); }
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch {}
     };
 
+    // Remote: load from Google Sheet via Apps Script
+    const remoteLoadAll = async () => {
+      const url = getScriptUrl();
+      if (!url) return null;
+      try {
+        const res = await fetch(url + '?action=loadAll');
+        const json = await res.json();
+        if (json.success && json.projects) {
+          saveAllProjects(json.projects);
+          return json.projects;
+        }
+        return null;
+      } catch (e) { console.error('Remote load error:', e); return null; }
+    };
+
+    // Remote: save project to Google Sheet
+    const remoteSave = async (projectData) => {
+      const url = getScriptUrl();
+      if (!url) return;
+      try {
+        await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ action: 'save', project: projectData }),
+        });
+      } catch (e) { console.error('Remote save error:', e); }
+    };
+
+    // Remote: delete project from Google Sheet
+    const remoteDelete = async (projectId) => {
+      const url = getScriptUrl();
+      if (!url) return;
+      try {
+        await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ action: 'delete', projectId: projectId }),
+        });
+      } catch (e) { console.error('Remote delete error:', e); }
+    };
+
+    // Combined: save locally + remotely
     const saveProject = (projectId, appData) => {
       const projects = loadAllProjects();
       const storeName = appData.proFormaData?.newStoreName || 'Unnamed Store';
@@ -2862,12 +2904,15 @@
       };
       if (idx >= 0) { projects[idx] = saveData; } else { projects.push(saveData); }
       saveAllProjects(projects);
+      remoteSave(saveData);
       return saveData;
     };
 
+    // Combined: delete locally + remotely
     const deleteProject = (projectId) => {
       const projects = loadAllProjects().filter(p => p.id !== projectId);
       saveAllProjects(projects);
+      remoteDelete(projectId);
     };
 
     const getProjectStatus = (appData) => {
@@ -2916,6 +2961,17 @@
       const [projects, setProjects] = useState(loadAllProjects());
       const [search, setSearch] = useState('');
       const [confirmDelete, setConfirmDelete] = useState(null);
+      const [syncing, setSyncing] = useState(false);
+
+      // Sync from Google Sheet on mount
+      useEffect(() => {
+        if (!getScriptUrl()) return;
+        setSyncing(true);
+        remoteLoadAll().then(remote => {
+          if (remote) setProjects(remote);
+          setSyncing(false);
+        });
+      }, []);
 
       const filtered = projects.filter(p =>
         !search || p.storeName.toLowerCase().includes(search.toLowerCase())
@@ -2975,7 +3031,17 @@
               <div className="flex items-center justify-between">
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight">Faherty NSO Assortment Tool</h1>
-                  <p className="text-gray-400 text-sm mt-1">New Store Opening — Assortment Planning</p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <p className="text-gray-400 text-sm">New Store Opening — Assortment Planning</p>
+                    {getScriptUrl() ? (
+                      <span className="flex items-center gap-1 text-xs text-green-400">
+                        <span className="w-1.5 h-1.5 bg-green-400 rounded-full"></span>
+                        {syncing ? 'Syncing...' : 'Connected'}
+                      </span>
+                    ) : (
+                      <button onClick={() => onNewProject('setup')} className="text-xs text-yellow-400 hover:text-yellow-300">Connect to Google Sheets →</button>
+                    )}
+                  </div>
                 </div>
                 <button
                   onClick={onNewProject}
@@ -3228,11 +3294,68 @@
     // ============================================
 
     const App = () => {
-      const [view, setView] = useState('dashboard');
+      const [view, setView] = useState(getScriptUrl() ? 'dashboard' : 'setup');
       const [activeProjectId, setActiveProjectId] = useState(null);
       const [currentStep, setCurrentStep] = useState(1);
       const [saveStatus, setSaveStatus] = useState('');
       const [appData, setAppData] = useState(makeBlankAppData());
+
+      // Setup screen — only shows once
+      if (view === 'setup') {
+        const SetupScreen = () => {
+          const [url, setUrl] = useState(getScriptUrl());
+          const [status, setStatus] = useState('');
+
+          const handleConnect = async () => {
+            if (!url.trim()) { setStatus('error: Please paste the Apps Script URL'); return; }
+            setStatus('testing');
+            try {
+              const res = await fetch(url.trim() + '?action=ping');
+              const json = await res.json();
+              if (json.success) {
+                setScriptUrl(url.trim());
+                setStatus('success');
+                // Load existing data
+                const remote = await remoteLoadAll();
+                setTimeout(() => setView('dashboard'), 1000);
+              } else {
+                setStatus('error: ' + (json.error || 'Unknown error'));
+              }
+            } catch (e) {
+              setStatus('error: Could not connect — ' + e.message);
+            }
+          };
+
+          return (
+            <div className="min-h-screen bg-gray-100 flex items-center justify-center p-8">
+              <div className="bg-white rounded-xl shadow-lg p-8 w-full max-w-lg">
+                <div className="text-center mb-6">
+                  <h1 className="text-2xl font-bold text-gray-800">Faherty NSO Tool</h1>
+                  <p className="text-sm text-gray-500 mt-2">One-time setup — paste your Apps Script URL to connect</p>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Apps Script Web App URL</label>
+                    <input type="text" value={url} onChange={(e) => setUrl(e.target.value)} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm" placeholder="https://script.google.com/macros/s/.../exec" />
+                    <p className="text-xs text-gray-400 mt-1">From your Google Sheet → Extensions → Apps Script → Deploy</p>
+                  </div>
+                  <button onClick={handleConnect} className="w-full px-5 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700">
+                    {status === 'testing' ? 'Connecting...' : 'Connect'}
+                  </button>
+                  {status === 'success' && <p className="text-sm text-green-600 font-semibold text-center">Connected! Loading dashboard...</p>}
+                  {status.startsWith('error') && <p className="text-sm text-red-600 text-center">{status.replace('error: ', '')}</p>}
+                </div>
+
+                <div className="mt-6 pt-4 border-t border-gray-200 text-center">
+                  <button onClick={() => setView('dashboard')} className="text-sm text-gray-400 hover:text-gray-600">Skip — use offline mode</button>
+                </div>
+              </div>
+            </div>
+          );
+        };
+        return <SetupScreen />;
+      }
 
       const handleOpenProject = (projectId) => {
         const projects = loadAllProjects();
