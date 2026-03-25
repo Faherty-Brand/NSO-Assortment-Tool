@@ -3493,7 +3493,8 @@
                       cc[milestoneId] = !cc[milestoneId];
                       project.appData.proFormaData.checklistComplete = cc;
                       saveProject(projectId, project.appData);
-                      doSync();
+                      // Update fullProjects immediately for instant UI
+                      setFullProjects(prev => ({ ...prev, [projectId]: project }));
                     };
 
                     return (
