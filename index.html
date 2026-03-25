@@ -1814,11 +1814,6 @@
       const [addedSkus, setAddedSkus] = useState(data.addedSkus || []);
       const [addSkuError, setAddSkuError] = useState('');
 
-      // Sync local state back to appData so auto-save captures changes
-      useEffect(() => {
-        onDataChange({ ...data, skuActions, skuNotes, divisionSignoffs, skuTargets, addedSkus });
-      }, [skuActions, skuNotes, divisionSignoffs, skuTargets, addedSkus]);
-
       // Build base data (delivery month + store group match + manually added SKUs)
       const baseData = useMemo(() => {
         const selectedDeliveries = data.selectedDeliveries || [];
@@ -1931,15 +1926,20 @@
           if (sku) newActions[sku] = action;
         });
         setSkuActions(newActions);
+        onDataChange({ ...data, skuActions: newActions, skuNotes, divisionSignoffs, skuTargets, addedSkus });
         setSelectedRows(new Set());
       };
 
       const handleActionChange = (sku, action) => {
-        setSkuActions({ ...skuActions, [sku]: action });
+        const updated = { ...skuActions, [sku]: action };
+        setSkuActions(updated);
+        onDataChange({ ...data, skuActions: updated, skuNotes, divisionSignoffs, skuTargets, addedSkus });
       };
 
       const handleNoteChange = (sku, note) => {
-        setSkuNotes({ ...skuNotes, [sku]: note });
+        const updated = { ...skuNotes, [sku]: note };
+        setSkuNotes(updated);
+        onDataChange({ ...data, skuActions, skuNotes: updated, divisionSignoffs, skuTargets, addedSkus });
       };
 
       const handleAddSku = () => {
@@ -1951,6 +1951,7 @@
         const skusToAdd = input.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
         const allPst = data.pstData || [];
         const newAdded = [...addedSkus];
+        const newActions = {};
         const errors = [];
 
         skusToAdd.forEach(skuVal => {
@@ -1965,13 +1966,16 @@
           const found = allPst.find(r => r.sku === skuVal);
           if (found) {
             newAdded.push({ ...found });
-            setSkuActions(prev => ({ ...prev, [skuVal]: 'Add' }));
+            newActions[skuVal] = 'Add';
           } else {
             errors.push(skuVal + ' not found in PST');
           }
         });
 
+        const updatedActions = { ...skuActions, ...newActions };
+        setSkuActions(updatedActions);
         setAddedSkus(newAdded);
+        onDataChange({ ...data, skuActions: updatedActions, skuNotes, divisionSignoffs, skuTargets, addedSkus: newAdded });
         setAddSkuInput('');
         if (errors.length > 0) {
           setAddSkuError(errors.join('; '));
