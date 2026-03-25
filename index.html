@@ -3595,6 +3595,7 @@
       const [currentStep, setCurrentStep] = useState(1);
       const [saveStatus, setSaveStatus] = useState('');
       const [appData, setAppData] = useState(makeBlankAppData());
+      const appDataRef = useRef(appData);
       const [userName, setUserName] = useState(localStorage.getItem('faherty_nso_username') || '');
       const [lockWarning, setLockWarning] = useState('');
       const [isLocked, setIsLocked] = useState(false);
@@ -3669,6 +3670,7 @@
         const project = await remoteLoadProject(projectId);
         if (project && project.appData) {
           activeProjectRef.current = projectId;
+          appDataRef.current = project.appData;
           setAppData(project.appData);
           setActiveProjectId(projectId);
           setCurrentStep(1);
@@ -3688,6 +3690,7 @@
         const newId = generateId();
         const blank = makeBlankAppData();
         activeProjectRef.current = newId;
+        appDataRef.current = blank;
         setAppData(blank);
         setActiveProjectId(newId);
         setCurrentStep(1);
@@ -3701,7 +3704,8 @@
       const handleBackToDashboard = async () => {
         if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
         if (activeProjectId) {
-          await saveProject(activeProjectId, appData);
+          // Use ref for guaranteed latest data (state might be stale)
+          await saveProject(activeProjectId, appDataRef.current);
           releaseLock(activeProjectId);
         }
         activeProjectRef.current = null;
@@ -3746,17 +3750,19 @@
 
       const handleDataChange = (newData) => {
         setAppData(newData);
+        appDataRef.current = newData;
       };
 
       // Auto-save 5 seconds after any data change
       useEffect(() => {
         if (!activeProjectId || view !== 'project') return;
+        appDataRef.current = appData; // keep ref in sync
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         const savedProjectId = activeProjectId;
         saveTimerRef.current = setTimeout(() => {
           // Only save if we're still on the same project
           if (activeProjectRef.current === savedProjectId) {
-            saveProject(savedProjectId, appData);
+            saveProject(savedProjectId, appDataRef.current);
             setSaveStatus('saved');
             setTimeout(() => setSaveStatus(''), 1500);
           }
@@ -3767,7 +3773,7 @@
       // Auto-save when moving between steps
       const handleNextWithSave = async (step) => {
         if (activeProjectId) {
-          await saveProject(activeProjectId, appData);
+          await saveProject(activeProjectId, appDataRef.current);
         }
         handleNext(step);
       };
@@ -3827,7 +3833,7 @@
               ].map(({ num, label }) => (
                 <button
                   key={num}
-                  onClick={async () => { if (activeProjectId) await saveProject(activeProjectId, appData); handleNext(num); }}
+                  onClick={async () => { if (activeProjectId) await saveProject(activeProjectId, appDataRef.current); handleNext(num); }}
                   className={`w-full text-left px-4 py-3 rounded-lg transition ${
                     currentStep === num
                       ? 'bg-blue-600 text-white font-bold'
