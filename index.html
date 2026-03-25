@@ -3057,7 +3057,7 @@
     };
     const saveAllProjects = (newProjects) => {
       try {
-        // GUARD: for each project, never overwrite with less data
+        // Preserve existing projects with PST data if incoming version lacks it
         const existing = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]');
         const existingMap = {};
         existing.forEach(p => { if (p.id) existingMap[p.id] = p; });
@@ -3065,17 +3065,17 @@
         const safeMerged = newProjects.map(p => {
           const old = existingMap[p.id];
           if (old) {
-            const oldSize = JSON.stringify(old.appData || {}).length;
-            const newSize = JSON.stringify(p.appData || {}).length;
-            if (newSize < oldSize * 0.5 && oldSize > 5000) {
-              console.warn('BLOCKED overwrite of', p.storeName, '- existing:', Math.round(oldSize/1024)+'KB, incoming:', Math.round(newSize/1024)+'KB');
+            const oldPST = (old.appData?.pstData || []).length;
+            const newPST = (p.appData?.pstData || []).length;
+            if (oldPST > 100 && newPST === 0) {
+              console.warn('BLOCKED overwrite of', p.storeName, '- would lose', oldPST, 'PST rows');
               return old;
             }
           }
           return p;
         });
         
-        // Also keep any existing projects not in newProjects
+        // Keep any existing projects not in the new list
         const newIds = new Set(newProjects.map(p => p.id));
         existing.forEach(p => { if (p.id && !newIds.has(p.id)) safeMerged.push(p); });
         
@@ -3232,12 +3232,12 @@
       if (idx >= 0) {
         saveData.createdAt = projects[idx].createdAt || now;
         
-        // GUARD: never overwrite with less data
-        const existingSize = JSON.stringify(projects[idx].appData || {}).length;
-        const newSize = JSON.stringify(appData || {}).length;
-        if (newSize < existingSize * 0.5 && existingSize > 5000) {
-          console.warn('BLOCKED save — would lose data. Existing:', Math.round(existingSize/1024)+'KB, New:', Math.round(newSize/1024)+'KB');
-          return projects[idx]; // return existing data, don't overwrite
+        // GUARD: only block if existing has PST data and new data doesn't
+        const existingPST = (projects[idx].appData?.pstData || []).length;
+        const newPST = (appData?.pstData || []).length;
+        if (existingPST > 100 && newPST === 0) {
+          console.warn('BLOCKED save — would lose PST data. Existing PST rows:', existingPST);
+          return projects[idx];
         }
         
         projects[idx] = saveData;
@@ -3245,10 +3245,7 @@
         projects.push(saveData);
       }
       
-      // Write to localStorage immediately
       try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch {}
-      
-      // Push to Supabase async
       remoteSave(saveData);
       return saveData;
     };
