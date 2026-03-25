@@ -2311,11 +2311,11 @@
     // STEP 5: DEPTH REVIEW RECAP
     // ============================================
 
-    const Step5 = ({ onNext, onPrev, data }) => {
+    const Step5 = ({ onNext, onPrev, onDataChange, data }) => {
       const [depthTargets, setDepthTargets] = useState(data.skuTargets || {});
       const [depthNotes, setDepthNotes] = useState({});
-      const [reservedUnits, setReservedUnits] = useState({});  // SKU → total quantity
-      const [reservedLoaded, setReservedLoaded] = useState(false);
+      const [reservedUnits, setReservedUnits] = useState(data.reservedUnits || {});  // SKU → total quantity
+      const [reservedLoaded, setReservedLoaded] = useState(Object.keys(data.reservedUnits || {}).length > 0);
       const reservedFileRef = useRef(null);
 
       const handleReservedUpload = (e) => {
@@ -2354,6 +2354,7 @@
             }
             setReservedUnits(units);
             setReservedLoaded(true);
+            onDataChange({ ...data, reservedUnits: units });
           } catch (error) {
             alert('Error parsing Reserved Units file: ' + error.message);
           }
@@ -3703,6 +3704,7 @@
 
       const handleBackToDashboard = async () => {
         if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+        if (instantSaveTimerRef.current) { clearTimeout(instantSaveTimerRef.current); instantSaveTimerRef.current = null; }
         if (activeProjectId) {
           // Use ref for guaranteed latest data (state might be stale)
           await saveProject(activeProjectId, appDataRef.current);
@@ -3748,9 +3750,19 @@
         window.scrollTo(0, 0);
       };
 
+      const instantSaveTimerRef = useRef(null);
       const handleDataChange = (newData) => {
         setAppData(newData);
         appDataRef.current = newData;
+        // Debounced save to Supabase (1 second after last change)
+        if (instantSaveTimerRef.current) clearTimeout(instantSaveTimerRef.current);
+        if (activeProjectId) {
+          instantSaveTimerRef.current = setTimeout(() => {
+            if (activeProjectRef.current === activeProjectId) {
+              saveProject(activeProjectId, appDataRef.current);
+            }
+          }, 1000);
+        }
       };
 
       // Auto-save 5 seconds after any data change
