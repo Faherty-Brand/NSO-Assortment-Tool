@@ -3055,8 +3055,32 @@
     const loadAllProjects = () => {
       try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { return []; }
     };
-    const saveAllProjects = (projects) => {
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch {}
+    const saveAllProjects = (newProjects) => {
+      try {
+        // GUARD: for each project, never overwrite with less data
+        const existing = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]');
+        const existingMap = {};
+        existing.forEach(p => { if (p.id) existingMap[p.id] = p; });
+        
+        const safeMerged = newProjects.map(p => {
+          const old = existingMap[p.id];
+          if (old) {
+            const oldSize = JSON.stringify(old.appData || {}).length;
+            const newSize = JSON.stringify(p.appData || {}).length;
+            if (newSize < oldSize * 0.5 && oldSize > 5000) {
+              console.warn('BLOCKED overwrite of', p.storeName, '- existing:', Math.round(oldSize/1024)+'KB, incoming:', Math.round(newSize/1024)+'KB');
+              return old;
+            }
+          }
+          return p;
+        });
+        
+        // Also keep any existing projects not in newProjects
+        const newIds = new Set(newProjects.map(p => p.id));
+        existing.forEach(p => { if (p.id && !newIds.has(p.id)) safeMerged.push(p); });
+        
+        localStorage.setItem(CACHE_KEY, JSON.stringify(safeMerged));
+      } catch {}
     };
 
     // Remote: load all projects from Supabase and merge with local
@@ -3189,20 +3213,42 @@
       } catch (e) { console.error('Remote delete error:', e); }
     };
 
-    // Combined: save locally + remotely (FULL data — no stripping needed!)
+    // Combined: save locally + remotely (FULL data)
     const saveProject = (projectId, appData) => {
-      const projects = loadAllProjects();
       const storeName = appData.proFormaData?.newStoreName || 'Unnamed Store';
       const now = new Date().toISOString();
-      const idx = projects.findIndex(p => p.id === projectId);
       const saveData = {
         id: projectId, storeName,
         status: getProjectStatus(appData),
-        createdAt: idx >= 0 ? projects[idx].createdAt : now,
+        createdAt: now,
         updatedAt: now, appData,
       };
-      if (idx >= 0) { projects[idx] = saveData; } else { projects.push(saveData); }
-      saveAllProjects(projects);
+      
+      // Read current cache directly
+      let projects;
+      try { projects = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { projects = []; }
+      const idx = projects.findIndex(p => p.id === projectId);
+      
+      if (idx >= 0) {
+        saveData.createdAt = projects[idx].createdAt || now;
+        
+        // GUARD: never overwrite with less data
+        const existingSize = JSON.stringify(projects[idx].appData || {}).length;
+        const newSize = JSON.stringify(appData || {}).length;
+        if (newSize < existingSize * 0.5 && existingSize > 5000) {
+          console.warn('BLOCKED save — would lose data. Existing:', Math.round(existingSize/1024)+'KB, New:', Math.round(newSize/1024)+'KB');
+          return projects[idx]; // return existing data, don't overwrite
+        }
+        
+        projects[idx] = saveData;
+      } else {
+        projects.push(saveData);
+      }
+      
+      // Write to localStorage immediately
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch {}
+      
+      // Push to Supabase async
       remoteSave(saveData);
       return saveData;
     };
@@ -3213,6 +3259,7 @@
       saveAllProjects(projects);
       remoteDelete(projectId);
     };
+
 
     const getProjectStatus = (appData) => {
       if (!appData) return 'Not Started';
