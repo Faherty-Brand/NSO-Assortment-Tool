@@ -2391,10 +2391,13 @@
         const rows = [];
         const divisionOrder = ['Mens', 'Womens', 'Non Apparel', 'Kids', 'Accessories'];
         const deptMap = {};
+        const seenSkus = new Set();
 
         filteredData.forEach(row => {
           const action = skuActions[row.sku] || 'Keep';
           if (action === 'Drop') return;
+          if (seenSkus.has(row.sku)) return; // deduplicate — count each SKU only once
+          seenSkus.add(row.sku);
           const dept = row.department || 'Other';
           const cat = row.category || 'Other';
           if (!deptMap[dept]) deptMap[dept] = { skus: 0, units: 0, cats: {} };
@@ -3100,7 +3103,7 @@
     // Load full project list from Supabase (dashboard metadata only — no app_data)
     const remoteLoadAll = async () => {
       try {
-        const res = await supaFetch('projects?select=id,store_name,status,created_at,updated_at&order=updated_at.desc');
+        const res = await supaFetch('projects?select=id,store_name,status,created_at,updated_at&order=updated_at.desc&_t=' + Date.now());
         if (!res.ok) return null;
         const rows = await res.json();
         const projects = rows.map(r => ({
@@ -3112,10 +3115,10 @@
       } catch (e) { console.error('Remote load error:', e); return null; }
     };
 
-    // Load ONE project's full data from Supabase
+    // Load ONE project's full data from Supabase (cache-busted)
     const remoteLoadProject = async (projectId) => {
       try {
-        const res = await supaFetch('projects?id=eq.' + projectId + '&select=*');
+        const res = await supaFetch('projects?id=eq.' + projectId + '&select=*&_t=' + Date.now());
         if (!res.ok) return null;
         const rows = await res.json();
         if (rows.length === 0) return null;
@@ -3218,7 +3221,7 @@
         remoteLoadAll().then(remote => {
           if (remote) setProjects(remote);
           // Also load full data for Gantt checklist
-          supaFetch('projects?select=*&order=updated_at.desc').then(r => r.json()).then(rows => {
+          supaFetch('projects?select=*&order=updated_at.desc&_t=' + Date.now()).then(r => r.json()).then(rows => {
             const map = {};
             rows.forEach(r => {
               map[r.id] = {
