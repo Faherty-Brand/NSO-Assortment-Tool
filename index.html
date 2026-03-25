@@ -3486,15 +3486,19 @@
                     const mLabels = { skuCountAlignment:'SKU Count Alignment', merchPassOff:'Merch Pass Off', merchFinalReview:'Merch Final Review', linesheetCreation:'Linesheet Creation', allocReserve:'Allocation Reserve', depthReview:'Depth Review', allocDrop:'Allocation Drop Date', linesheetFinal:'Linesheet Creation - FINAL', merchDelivery:'Merch Delivery Date', openingDate:'Opening Date' };
                     const td = new Date(); td.setHours(0,0,0,0);
 
-                    const handleAggToggle = async (projectId, milestoneId) => {
-                      const project = await remoteLoadProject(projectId);
-                      if (!project?.appData?.proFormaData) return;
-                      const cc = project.appData.proFormaData.checklistComplete || {};
-                      cc[milestoneId] = !cc[milestoneId];
-                      project.appData.proFormaData.checklistComplete = cc;
-                      saveProject(projectId, project.appData);
-                      // Update fullProjects immediately for instant UI
-                      setFullProjects(prev => ({ ...prev, [projectId]: project }));
+                    const handleAggToggle = (projectId, milestoneId) => {
+                      // Optimistic UI update first
+                      setFullProjects(prev => {
+                        const fp = prev[projectId];
+                        if (!fp?.appData?.proFormaData) return prev;
+                        const updated = JSON.parse(JSON.stringify(fp));
+                        const cc = updated.appData.proFormaData.checklistComplete || {};
+                        cc[milestoneId] = !cc[milestoneId];
+                        updated.appData.proFormaData.checklistComplete = cc;
+                        // Save to Supabase in background
+                        saveProject(projectId, updated.appData);
+                        return { ...prev, [projectId]: updated };
+                      });
                     };
 
                     return (
