@@ -3037,66 +3037,89 @@
 
 
     // ============================================
-    // STORAGE HELPERS (Supabase backend)
+    // STORAGE HELPERS (Supabase + localStorage)
     // ============================================
 
     const SUPABASE_URL = 'https://nsusxfwoprirxkvaueyf.supabase.co';
     const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5zdXN4ZndvcHJpcnhrdmF1ZXlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTU3MzQsImV4cCI6MjA4OTkzMTczNH0.VHvO23T-YsGQYb9sinsydNPs8e9xR_nzMwOlpiR7Qrk';
     const CACHE_KEY = 'faherty_nso_cache';
 
-    const supaHeaders = {
-      'apikey': SUPABASE_KEY,
-      'Authorization': 'Bearer ' + SUPABASE_KEY,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=minimal',
-    };
-
-    // Local cache for instant rendering
+    // Read/write localStorage
     const loadAllProjects = () => {
       try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { return []; }
     };
-    const saveAllProjects = (newProjects) => {
-      try {
-        // Preserve existing projects with PST data if incoming version lacks it
-        const existing = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]');
-        const existingMap = {};
-        existing.forEach(p => { if (p.id) existingMap[p.id] = p; });
-        
-        const safeMerged = newProjects.map(p => {
-          const old = existingMap[p.id];
-          if (old) {
-            const oldPST = (old.appData?.pstData || []).length;
-            const newPST = (p.appData?.pstData || []).length;
-            if (oldPST > 100 && newPST === 0) {
-              console.warn('BLOCKED overwrite of', p.storeName, '- would lose', oldPST, 'PST rows');
-              return old;
-            }
-          }
-          return p;
-        });
-        
-        // Keep any existing projects not in the new list
-        const newIds = new Set(newProjects.map(p => p.id));
-        existing.forEach(p => { if (p.id && !newIds.has(p.id)) safeMerged.push(p); });
-        
-        localStorage.setItem(CACHE_KEY, JSON.stringify(safeMerged));
-      } catch {}
+
+    const saveAllProjects = (projects) => {
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch(e) { console.error('localStorage write failed:', e); }
     };
 
-    // Remote: load all projects from Supabase and merge with local
+    // Save one project: update localStorage then push to Supabase
+    const saveProject = (projectId, appData) => {
+      const storeName = appData.proFormaData?.newStoreName || 'Unnamed Store';
+      const now = new Date().toISOString();
+
+      // Read localStorage directly (not through loadAllProjects to avoid any caching)
+      let projects;
+      try { projects = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { projects = []; }
+
+      const idx = projects.findIndex(p => p.id === projectId);
+      const saveData = {
+        id: projectId, storeName,
+        status: getProjectStatus(appData),
+        createdAt: idx >= 0 ? (projects[idx].createdAt || now) : now,
+        updatedAt: now, appData,
+      };
+
+      if (idx >= 0) { projects[idx] = saveData; } else { projects.push(saveData); }
+
+      // Write to localStorage
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch(e) { console.error('localStorage write failed:', e); }
+
+      // Push to Supabase (fire and forget)
+      fetch(SUPABASE_URL + '/rest/v1/projects', {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': 'Bearer ' + SUPABASE_KEY,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify({
+          id: projectId,
+          store_name: storeName,
+          status: saveData.status,
+          updated_at: now,
+          app_data: appData,
+        }),
+      }).then(r => {
+        if (!r.ok) r.text().then(t => console.error('Supabase save failed:', r.status, t));
+      }).catch(e => console.error('Supabase save error:', e));
+
+      return saveData;
+    };
+
+    // Delete project from localStorage and Supabase
+    const deleteProject = (projectId) => {
+      let projects;
+      try { projects = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { projects = []; }
+      projects = projects.filter(p => p.id !== projectId);
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch {}
+
+      fetch(SUPABASE_URL + '/rest/v1/projects?id=eq.' + projectId, {
+        method: 'DELETE',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
+      }).catch(e => console.error('Supabase delete error:', e));
+    };
+
+    // Load from Supabase (only called by Refresh button)
     const remoteLoadAll = async () => {
       try {
         const res = await fetch(SUPABASE_URL + '/rest/v1/projects?select=*&order=updated_at.desc', {
           headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
         });
-        if (!res.ok) {
-          console.error('Supabase load failed:', res.status, await res.text());
-          return null;
-        }
+        if (!res.ok) return null;
         const rows = await res.json();
-        console.log('Supabase loaded', rows.length, 'projects');
-
-        const remoteProjects = rows.map(r => ({
+        return rows.map(r => ({
           id: r.id,
           storeName: r.store_name || '',
           status: r.status || '',
@@ -3104,157 +3127,7 @@
           updatedAt: r.updated_at || '',
           appData: r.app_data || makeBlankAppData(),
         }));
-
-        // MERGE: for each project, keep the version with more complete data
-        const local = loadAllProjects();
-        const localMap = {};
-        local.forEach(p => { if (p.id) localMap[p.id] = p; });
-        const remoteMap = {};
-        remoteProjects.forEach(p => { if (p.id) remoteMap[p.id] = p; });
-
-        const allIds = new Set([...Object.keys(localMap), ...Object.keys(remoteMap)]);
-        const merged = [];
-
-        allIds.forEach(id => {
-          const l = localMap[id];
-          const r = remoteMap[id];
-          if (l && r) {
-            // Compare data completeness: count of non-empty fields in appData
-            const localSize = JSON.stringify(l.appData || {}).length;
-            const remoteSize = JSON.stringify(r.appData || {}).length;
-            const lTime = new Date(l.updatedAt || 0).getTime();
-            const rTime = new Date(r.updatedAt || 0).getTime();
-            
-            // Keep the bigger dataset, or if similar size, keep the newer one
-            if (localSize > remoteSize * 1.1) {
-              console.log('Merge: keeping LOCAL for', l.storeName, '(local:', Math.round(localSize/1024)+'KB, remote:', Math.round(remoteSize/1024)+'KB)');
-              merged.push(l);
-              // Push local data to Supabase since it's more complete
-              remoteSave(l);
-            } else if (remoteSize > localSize * 1.1) {
-              console.log('Merge: keeping REMOTE for', r.storeName, '(local:', Math.round(localSize/1024)+'KB, remote:', Math.round(remoteSize/1024)+'KB)');
-              merged.push(r);
-            } else {
-              // Similar size — keep newer
-              merged.push(lTime >= rTime ? l : r);
-            }
-          } else if (l) {
-            merged.push(l);
-            // Push local-only project to Supabase
-            remoteSave(l);
-          } else if (r) {
-            merged.push(r);
-          }
-        });
-
-        saveAllProjects(merged);
-        return merged;
       } catch (e) { console.error('Remote load error:', e); return null; }
-    };
-
-    // Remote: upsert project to Supabase (sequential — only one save at a time)
-    let _saving = false;
-    let _pendingSave = null;
-
-    const remoteSave = async (projectData) => {
-      // If already saving, queue this one (latest data wins)
-      if (_saving) {
-        _pendingSave = projectData;
-        return;
-      }
-      _saving = true;
-      try {
-        const bodyData = {
-          id: projectData.id,
-          store_name: projectData.storeName,
-          status: projectData.status,
-          updated_at: projectData.updatedAt || new Date().toISOString(),
-          app_data: projectData.appData,
-        };
-        const bodyStr = JSON.stringify(bodyData);
-        console.log('Supabase saving:', projectData.id, projectData.storeName, 'size:', Math.round(bodyStr.length / 1024) + 'KB');
-        const res = await fetch(SUPABASE_URL + '/rest/v1/projects', {
-          method: 'POST',
-          headers: {
-            'apikey': SUPABASE_KEY,
-            'Authorization': 'Bearer ' + SUPABASE_KEY,
-            'Content-Type': 'application/json',
-            'Prefer': 'resolution=merge-duplicates',
-          },
-          body: bodyStr,
-        });
-        if (!res.ok) {
-          const errText = await res.text();
-          console.error('Supabase save failed:', res.status, errText);
-        } else {
-          console.log('Supabase save OK:', projectData.id, projectData.storeName);
-        }
-      } catch (e) { console.error('Remote save error:', e); }
-      _saving = false;
-      // Process any queued save
-      if (_pendingSave) {
-        const next = _pendingSave;
-        _pendingSave = null;
-        remoteSave(next);
-      }
-    };
-
-    // Remote: delete project from Supabase
-    const remoteDelete = async (projectId) => {
-      try {
-        const res = await fetch(SUPABASE_URL + '/rest/v1/projects?id=eq.' + projectId, {
-          method: 'DELETE',
-          headers: {
-            'apikey': SUPABASE_KEY,
-            'Authorization': 'Bearer ' + SUPABASE_KEY,
-          },
-        });
-        if (!res.ok) console.error('Supabase delete failed:', res.status);
-      } catch (e) { console.error('Remote delete error:', e); }
-    };
-
-    // Combined: save locally + remotely (FULL data)
-    const saveProject = (projectId, appData) => {
-      const storeName = appData.proFormaData?.newStoreName || 'Unnamed Store';
-      const now = new Date().toISOString();
-      const saveData = {
-        id: projectId, storeName,
-        status: getProjectStatus(appData),
-        createdAt: now,
-        updatedAt: now, appData,
-      };
-      
-      // Read current cache directly
-      let projects;
-      try { projects = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { projects = []; }
-      const idx = projects.findIndex(p => p.id === projectId);
-      
-      if (idx >= 0) {
-        saveData.createdAt = projects[idx].createdAt || now;
-        
-        // GUARD: only block if existing has PST data and new data doesn't
-        const existingPST = (projects[idx].appData?.pstData || []).length;
-        const newPST = (appData?.pstData || []).length;
-        if (existingPST > 100 && newPST === 0) {
-          console.warn('BLOCKED save — would lose PST data. Existing PST rows:', existingPST);
-          return projects[idx];
-        }
-        
-        projects[idx] = saveData;
-      } else {
-        projects.push(saveData);
-      }
-      
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch {}
-      remoteSave(saveData);
-      return saveData;
-    };
-
-    // Combined: delete locally + remotely
-    const deleteProject = (projectId) => {
-      const projects = loadAllProjects().filter(p => p.id !== projectId);
-      saveAllProjects(projects);
-      remoteDelete(projectId);
     };
 
 
@@ -3306,22 +3179,18 @@
       const [confirmDelete, setConfirmDelete] = useState(null);
       const [syncing, setSyncing] = useState(false);
 
-      // Push local data to Supabase on mount (don't pull — prevents overwrites)
-      const pushLocalToRemote = () => {
-        const local = loadAllProjects();
-        local.forEach(p => remoteSave(p));
-      };
-
       const doSync = () => {
         setSyncing(true);
         remoteLoadAll().then(remote => {
-          if (remote) setProjects(remote);
+          if (remote) {
+            saveAllProjects(remote);
+            setProjects(remote);
+          }
           setSyncing(false);
         });
       };
 
-      // On mount: push local data to Supabase, but DON'T overwrite local with remote
-      useEffect(() => { pushLocalToRemote(); }, []);
+      // No auto-sync on mount — just read local data
 
       const filtered = projects.filter(p =>
         !search || p.storeName.toLowerCase().includes(search.toLowerCase())
@@ -3776,25 +3645,10 @@
         startLockRefresh(newId);
       };
 
-      const handleBackToDashboard = async () => {
-        // Cancel any pending auto-save
+      const handleBackToDashboard = () => {
         if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
         if (activeProjectId) {
-          // Save with current appData and WAIT for remote save to complete
-          const projects = loadAllProjects();
-          const storeName = appData.proFormaData?.newStoreName || 'Unnamed Store';
-          const now = new Date().toISOString();
-          const idx = projects.findIndex(p => p.id === activeProjectId);
-          const saveData = {
-            id: activeProjectId, storeName,
-            status: getProjectStatus(appData),
-            createdAt: idx >= 0 ? projects[idx].createdAt : now,
-            updatedAt: now, appData,
-          };
-          if (idx >= 0) { projects[idx] = saveData; } else { projects.push(saveData); }
-          saveAllProjects(projects);
-          // Wait for remote save to finish before navigating
-          await remoteSave(saveData);
+          saveProject(activeProjectId, appData);
           releaseLock(activeProjectId);
         }
         activeProjectRef.current = null;
