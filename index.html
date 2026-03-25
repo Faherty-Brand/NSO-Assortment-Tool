@@ -3037,97 +3037,105 @@
 
 
     // ============================================
-    // STORAGE HELPERS (Supabase + localStorage)
+    // STORAGE HELPERS (Supabase primary, localStorage for dashboard cache only)
     // ============================================
 
     const SUPABASE_URL = 'https://nsusxfwoprirxkvaueyf.supabase.co';
     const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5zdXN4ZndvcHJpcnhrdmF1ZXlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNTU3MzQsImV4cCI6MjA4OTkzMTczNH0.VHvO23T-YsGQYb9sinsydNPs8e9xR_nzMwOlpiR7Qrk';
     const CACHE_KEY = 'faherty_nso_cache';
 
-    // Read/write localStorage
-    const loadAllProjects = () => {
+    const supaFetch = (path, opts = {}) => fetch(SUPABASE_URL + '/rest/v1/' + path, {
+      ...opts,
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        ...(opts.headers || {}),
+      },
+    });
+
+    // Dashboard cache: only stores id, storeName, status, dates (NO appData — too big)
+    const loadDashboardCache = () => {
       try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { return []; }
     };
-
-    const saveAllProjects = (projects) => {
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch(e) { console.error('localStorage write failed:', e); }
+    const saveDashboardCache = (projects) => {
+      try {
+        const slim = projects.map(p => ({
+          id: p.id, storeName: p.storeName, status: p.status,
+          createdAt: p.createdAt, updatedAt: p.updatedAt,
+        }));
+        localStorage.setItem(CACHE_KEY, JSON.stringify(slim));
+      } catch {}
     };
 
-    // Save one project: update localStorage then push to Supabase
+    // For backward compat — dashboard uses this
+    const loadAllProjects = () => loadDashboardCache();
+    const saveAllProjects = (projects) => saveDashboardCache(projects);
+
+    // Load full project list from Supabase (dashboard metadata only — no app_data)
+    const remoteLoadAll = async () => {
+      try {
+        const res = await supaFetch('projects?select=id,store_name,status,created_at,updated_at&order=updated_at.desc');
+        if (!res.ok) return null;
+        const rows = await res.json();
+        const projects = rows.map(r => ({
+          id: r.id, storeName: r.store_name || '', status: r.status || '',
+          createdAt: r.created_at || '', updatedAt: r.updated_at || '',
+        }));
+        saveDashboardCache(projects);
+        return projects;
+      } catch (e) { console.error('Remote load error:', e); return null; }
+    };
+
+    // Load ONE project's full data from Supabase
+    const remoteLoadProject = async (projectId) => {
+      try {
+        const res = await supaFetch('projects?id=eq.' + projectId + '&select=*');
+        if (!res.ok) return null;
+        const rows = await res.json();
+        if (rows.length === 0) return null;
+        const r = rows[0];
+        return {
+          id: r.id, storeName: r.store_name || '', status: r.status || '',
+          createdAt: r.created_at || '', updatedAt: r.updated_at || '',
+          appData: r.app_data || makeBlankAppData(),
+        };
+      } catch (e) { console.error('Load project error:', e); return null; }
+    };
+
+    // Save project to Supabase (primary storage)
     const saveProject = (projectId, appData) => {
       const storeName = appData.proFormaData?.newStoreName || 'Unnamed Store';
       const now = new Date().toISOString();
+      const status = getProjectStatus(appData);
 
-      // Read localStorage directly (not through loadAllProjects to avoid any caching)
-      let projects;
-      try { projects = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { projects = []; }
+      // Update dashboard cache (slim — no appData)
+      let cache = loadDashboardCache();
+      const idx = cache.findIndex(p => p.id === projectId);
+      const cacheEntry = { id: projectId, storeName, status, createdAt: idx >= 0 ? (cache[idx].createdAt || now) : now, updatedAt: now };
+      if (idx >= 0) { cache[idx] = cacheEntry; } else { cache.push(cacheEntry); }
+      saveDashboardCache(cache);
 
-      const idx = projects.findIndex(p => p.id === projectId);
-      const saveData = {
-        id: projectId, storeName,
-        status: getProjectStatus(appData),
-        createdAt: idx >= 0 ? (projects[idx].createdAt || now) : now,
-        updatedAt: now, appData,
-      };
-
-      if (idx >= 0) { projects[idx] = saveData; } else { projects.push(saveData); }
-
-      // Write to localStorage
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch(e) { console.error('localStorage write failed:', e); }
-
-      // Push to Supabase (fire and forget)
-      fetch(SUPABASE_URL + '/rest/v1/projects', {
+      // Save full data to Supabase
+      supaFetch('projects', {
         method: 'POST',
-        headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': 'Bearer ' + SUPABASE_KEY,
-          'Content-Type': 'application/json',
-          'Prefer': 'resolution=merge-duplicates',
-        },
+        headers: { 'Prefer': 'resolution=merge-duplicates' },
         body: JSON.stringify({
-          id: projectId,
-          store_name: storeName,
-          status: saveData.status,
-          updated_at: now,
-          app_data: appData,
+          id: projectId, store_name: storeName, status, updated_at: now, app_data: appData,
         }),
       }).then(r => {
-        if (!r.ok) r.text().then(t => console.error('Supabase save failed:', r.status, t));
-      }).catch(e => console.error('Supabase save error:', e));
+        if (!r.ok) r.text().then(t => console.error('Save failed:', r.status, t));
+      }).catch(e => console.error('Save error:', e));
 
-      return saveData;
+      return { id: projectId, storeName, status, createdAt: cacheEntry.createdAt, updatedAt: now, appData };
     };
 
-    // Delete project from localStorage and Supabase
+    // Delete project
     const deleteProject = (projectId) => {
-      let projects;
-      try { projects = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { projects = []; }
-      projects = projects.filter(p => p.id !== projectId);
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify(projects)); } catch {}
-
-      fetch(SUPABASE_URL + '/rest/v1/projects?id=eq.' + projectId, {
-        method: 'DELETE',
-        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
-      }).catch(e => console.error('Supabase delete error:', e));
-    };
-
-    // Load from Supabase (only called by Refresh button)
-    const remoteLoadAll = async () => {
-      try {
-        const res = await fetch(SUPABASE_URL + '/rest/v1/projects?select=*&order=updated_at.desc', {
-          headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY },
-        });
-        if (!res.ok) return null;
-        const rows = await res.json();
-        return rows.map(r => ({
-          id: r.id,
-          storeName: r.store_name || '',
-          status: r.status || '',
-          createdAt: r.created_at || '',
-          updatedAt: r.updated_at || '',
-          appData: r.app_data || makeBlankAppData(),
-        }));
-      } catch (e) { console.error('Remote load error:', e); return null; }
+      let cache = loadDashboardCache();
+      cache = cache.filter(p => p.id !== projectId);
+      saveDashboardCache(cache);
+      supaFetch('projects?id=eq.' + projectId, { method: 'DELETE' }).catch(e => console.error('Delete error:', e));
     };
 
 
@@ -3175,6 +3183,7 @@
 
     const Dashboard = ({ onOpenProject, onNewProject }) => {
       const [projects, setProjects] = useState(loadAllProjects());
+      const [fullProjects, setFullProjects] = useState({});
       const [search, setSearch] = useState('');
       const [confirmDelete, setConfirmDelete] = useState(null);
       const [syncing, setSyncing] = useState(false);
@@ -3182,15 +3191,25 @@
       const doSync = () => {
         setSyncing(true);
         remoteLoadAll().then(remote => {
-          if (remote) {
-            saveAllProjects(remote);
-            setProjects(remote);
-          }
+          if (remote) setProjects(remote);
+          // Also load full data for Gantt checklist
+          supaFetch('projects?select=*&order=updated_at.desc').then(r => r.json()).then(rows => {
+            const map = {};
+            rows.forEach(r => {
+              map[r.id] = {
+                id: r.id, storeName: r.store_name || '', status: r.status || '',
+                createdAt: r.created_at || '', updatedAt: r.updated_at || '',
+                appData: r.app_data || makeBlankAppData(),
+              };
+            });
+            setFullProjects(map);
+          }).catch(() => {});
           setSyncing(false);
         });
       };
 
-      // No auto-sync on mount — just read local data
+      // Load on mount
+      useEffect(() => { doSync(); }, []);
 
       const filtered = projects.filter(p =>
         !search || p.storeName.toLowerCase().includes(search.toLowerCase())
@@ -3220,17 +3239,19 @@
 
       const handleDelete = (id) => {
         deleteProject(id);
-        setProjects(loadAllProjects());
+        setProjects(prev => prev.filter(p => p.id !== id));
         setConfirmDelete(null);
       };
 
-      const handleDuplicate = (project) => {
+      const handleDuplicate = async (project) => {
+        const full = await remoteLoadProject(project.id);
+        if (!full?.appData) { alert('Could not load project data'); return; }
         const newId = generateId();
-        const dupData = JSON.parse(JSON.stringify(project.appData));
+        const dupData = JSON.parse(JSON.stringify(full.appData));
         dupData.proFormaData.newStoreName = project.storeName + ' (Copy)';
         dupData.divisionSignoffs = {};
         saveProject(newId, dupData);
-        setProjects(loadAllProjects());
+        doSync();
       };
 
       const statusColor = (status) => {
@@ -3338,12 +3359,6 @@
                           <span>Created: {formatDate(project.createdAt)}</span>
                           <span>·</span>
                           <span>Last saved: {formatDate(project.updatedAt)}</span>
-                          {project.appData?.pstData?.length > 0 && (
-                            <Fragment>
-                              <span>·</span>
-                              <span className="font-semibold text-gray-700">{project.appData.pstData.length} PST SKUs</span>
-                            </Fragment>
-                          )}
                         </div>
                       </div>
 
@@ -3446,7 +3461,8 @@
                     mIds.forEach(id => {
                       const row = { Milestone: mLabels[id] };
                       activeProjects.forEach(project => {
-                        const pf = project.appData?.proFormaData || {};
+                        const fp = fullProjects[project.id];
+                        const pf = fp?.appData?.proFormaData || {};
                         const { rows } = computeChecklistRows(pf);
                         const cc = pf.checklistComplete || {};
                         const r = rows.find(x => x.id === id);
@@ -3470,18 +3486,14 @@
                     const mLabels = { skuCountAlignment:'SKU Count Alignment', merchPassOff:'Merch Pass Off', merchFinalReview:'Merch Final Review', linesheetCreation:'Linesheet Creation', allocReserve:'Allocation Reserve', depthReview:'Depth Review', allocDrop:'Allocation Drop Date', linesheetFinal:'Linesheet Creation - FINAL', merchDelivery:'Merch Delivery Date', openingDate:'Opening Date' };
                     const td = new Date(); td.setHours(0,0,0,0);
 
-                    const handleAggToggle = (projectId, milestoneId) => {
-                      const all = loadAllProjects();
-                      const p = all.find(x => x.id === projectId);
-                      if (!p?.appData?.proFormaData) return;
-                      const cc = p.appData.proFormaData.checklistComplete || {};
+                    const handleAggToggle = async (projectId, milestoneId) => {
+                      const project = await remoteLoadProject(projectId);
+                      if (!project?.appData?.proFormaData) return;
+                      const cc = project.appData.proFormaData.checklistComplete || {};
                       cc[milestoneId] = !cc[milestoneId];
-                      p.appData.proFormaData.checklistComplete = cc;
-                      p.updatedAt = new Date().toISOString();
-                      p.status = getProjectStatus(p.appData);
-                      saveAllProjects(all);
-                      remoteSave(p);
-                      setProjects(loadAllProjects());
+                      project.appData.proFormaData.checklistComplete = cc;
+                      saveProject(projectId, project.appData);
+                      doSync();
                     };
 
                     return (
@@ -3502,7 +3514,8 @@
                               <tr key={id} className="border-b border-gray-200 hover:bg-gray-50">
                                 <td className="px-2 py-1.5 font-semibold text-gray-800 sticky left-0 bg-white z-10 text-xs whitespace-nowrap">{mLabels[id]}</td>
                                 {activeProjects.map(project => {
-                                  const pf = project.appData?.proFormaData || {};
+                                  const fp = fullProjects[project.id];
+                                  const pf = fp?.appData?.proFormaData || {};
                                   const { rows } = computeChecklistRows(pf);
                                   const cc = pf.checklistComplete || {};
                                   const row = rows.find(r => r.id === id);
@@ -3610,12 +3623,12 @@
         setIsLocked(false);
       };
 
-      const handleOpenProject = (projectId) => {
+      const handleOpenProject = async (projectId) => {
         getUserName();
-        // Cancel any pending auto-save from previous project
         if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
-        const projects = loadAllProjects();
-        const project = projects.find(p => p.id === projectId);
+        
+        // Load full project data from Supabase
+        const project = await remoteLoadProject(projectId);
         if (project && project.appData) {
           activeProjectRef.current = projectId;
           setAppData(project.appData);
@@ -3625,6 +3638,8 @@
           acquireLock(projectId);
           startLockRefresh(projectId);
           setTimeout(() => checkLocks(projectId), 3000);
+        } else {
+          alert('Could not load project data. Check your internet connection and try again.');
         }
       };
 
