@@ -3078,6 +3078,7 @@
         'apikey': SUPABASE_KEY,
         'Authorization': 'Bearer ' + SUPABASE_KEY,
         'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
         ...(opts.headers || {}),
       },
     });
@@ -3103,7 +3104,7 @@
     // Load full project list from Supabase (dashboard metadata only — no app_data)
     const remoteLoadAll = async () => {
       try {
-        const res = await supaFetch('projects?select=id,store_name,status,created_at,updated_at&order=updated_at.desc&_t=' + Date.now());
+        const res = await supaFetch('projects?select=id,store_name,status,created_at,updated_at&order=updated_at.desc');
         if (!res.ok) return null;
         const rows = await res.json();
         const projects = rows.map(r => ({
@@ -3118,7 +3119,7 @@
     // Load ONE project's full data from Supabase (cache-busted)
     const remoteLoadProject = async (projectId) => {
       try {
-        const res = await supaFetch('projects?id=eq.' + projectId + '&select=*&_t=' + Date.now());
+        const res = await supaFetch('projects?id=eq.' + projectId + '&select=*');
         if (!res.ok) return null;
         const rows = await res.json();
         if (rows.length === 0) return null;
@@ -3221,7 +3222,7 @@
         remoteLoadAll().then(remote => {
           if (remote) setProjects(remote);
           // Also load full data for Gantt checklist
-          supaFetch('projects?select=*&order=updated_at.desc&_t=' + Date.now()).then(r => r.json()).then(rows => {
+          supaFetch('projects?select=*&order=updated_at.desc').then(r => r.json()).then(rows => {
             const map = {};
             rows.forEach(r => {
               map[r.id] = {
