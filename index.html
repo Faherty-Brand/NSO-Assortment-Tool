@@ -2843,6 +2843,7 @@
               <thead>
                 <tr className="bg-gray-100 border-b-2 border-gray-300">
                   <th className="px-3 py-2 text-center text-xs font-bold text-gray-600" style={{width:'40px'}}>Done</th>
+                  <th className="px-3 py-2 text-left text-xs font-bold text-gray-700" style={{width:'120px'}}>Owner</th>
                   <th className="px-3 py-2 text-left text-xs font-bold text-gray-700" style={{width:'200px'}}>Milestone</th>
                   <th className="px-3 py-2 text-left text-xs font-bold text-gray-700" style={{width:'180px'}}>Date</th>
                   <th className="px-3 py-2 text-left text-xs font-bold text-gray-400" style={{width:'160px'}}>Calc</th>
@@ -2851,16 +2852,49 @@
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
+                {(() => {
+                  const ownerColors = {
+                    'Visual Merchandising': { bg: 'bg-indigo-100', text: 'text-indigo-800' },
+                    'Store Planning': { bg: 'bg-purple-100', text: 'text-purple-800' },
+                    'Merchandising': { bg: 'bg-blue-100', text: 'text-blue-800' },
+                    'Allocation': { bg: 'bg-green-100', text: 'text-green-800' },
+                    'Ops': { bg: 'bg-orange-100', text: 'text-orange-800' },
+                    'Store Development': { bg: 'bg-pink-100', text: 'text-pink-800' },
+                  };
+                  const milestoneOwners = {
+                    skuCountAlignment: 'Visual Merchandising',
+                    merchPassOff: 'Store Planning',
+                    merchFinalReview: 'Merchandising',
+                    linesheetCreation: 'Allocation',
+                    allocReserve: 'Allocation',
+                    depthReview: 'Store Planning',
+                    allocDrop: 'Allocation',
+                    allocNetsuiteImport: 'Ops',
+                    dcPackingStarts: 'Ops',
+                    truckBooking: 'Ops',
+                    dcDeparture: 'Ops',
+                    linesheetFinal: 'Allocation',
+                    merchDelivery: 'Store Development',
+                    openingDate: 'Store Development',
+                  };
+                  return rows.map((row) => {
                   const isDone = !!checklistComplete[row.id];
                   const isOverdue = !isDone && row.dateObj && row.dateObj < today && !row.readonly;
                   const isEditing = (data.proFormaData._editingDateRow || '') === row.id;
+                  const owner = milestoneOwners[row.id] || '';
+                  const ownerStyle = ownerColors[owner] || { bg: '', text: 'text-gray-400' };
+                  const rowBg = isDone ? 'bg-green-50 opacity-70' : isOverdue ? 'bg-red-50' : owner ? ownerStyle.bg : row.highlight ? 'bg-blue-50' : row.isCustom ? 'bg-yellow-50' : 'hover:bg-gray-50';
                   return (
-                    <tr key={row.id} className={`border-b border-gray-200 ${isDone ? 'bg-green-50 opacity-70' : isOverdue ? 'bg-red-50' : row.highlight ? 'bg-blue-50' : row.isCustom ? 'bg-yellow-50' : 'hover:bg-gray-50'}`}>
+                    <tr key={row.id} className={`border-b border-gray-200 ${rowBg}`}>
                       <td className="px-3 py-2 text-center">
                         {!row.readonly && (
                           <input type="checkbox" checked={isDone} onChange={() => toggleComplete(row.id)} className="w-4 h-4 rounded cursor-pointer" />
                         )}
+                      </td>
+                      <td className="px-2 py-1">
+                        {owner ? (
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${ownerStyle.text} ${ownerStyle.bg}`}>{owner}</span>
+                        ) : <span className="text-xs text-gray-300">—</span>}
                       </td>
                       <td className={`px-3 py-2 text-xs font-semibold ${isDone ? 'line-through text-gray-400' : isOverdue ? 'text-red-700' : 'text-gray-800'}`}>
                         {row.isCustom && <span className="text-yellow-500 mr-1">●</span>}
@@ -2884,7 +2918,8 @@
                       </td>
                     </tr>
                   );
-                })}
+                });
+                })()}
               </tbody>
             </table>
           </div>
