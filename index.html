@@ -3596,11 +3596,37 @@
                       });
                     };
 
+                    const milestoneOwners = {
+                      skuCountAlignment: 'Visual Merchandising',
+                      merchPassOff: 'Store Planning',
+                      merchFinalReview: 'Merchandising',
+                      linesheetCreation: 'Allocation',
+                      allocReserve: 'Allocation',
+                      depthReview: 'Store Planning',
+                      allocDrop: 'Allocation',
+                      allocNetsuiteImport: 'Ops',
+                      dcPackingStarts: 'Ops',
+                      truckBooking: 'Ops',
+                      dcDeparture: 'Ops',
+                      linesheetFinal: 'Allocation',
+                      merchDelivery: 'Store Development',
+                      openingDate: 'Store Development',
+                    };
+                    const ownerColors = {
+                      'Visual Merchandising': { bg: '#e0e7ff', text: '#3730a3' },
+                      'Store Planning': { bg: '#f3e8ff', text: '#6b21a8' },
+                      'Merchandising': { bg: '#dbeafe', text: '#1e40af' },
+                      'Allocation': { bg: '#dcfce7', text: '#166534' },
+                      'Ops': { bg: '#ffedd5', text: '#9a3412' },
+                      'Store Development': { bg: '#fce7f3', text: '#9d174d' },
+                    };
+
                     return (
                       <table className="text-xs border-collapse">
                         <thead>
                           <tr className="bg-gray-100 border-b-2 border-gray-300">
-                            <th className="px-2 py-1.5 text-left font-bold text-gray-700 sticky left-0 bg-gray-100 z-10" style={{width:'200px',minWidth:'200px'}}>Milestone</th>
+                            <th className="px-2 py-1.5 text-left font-bold text-gray-700 sticky left-0 bg-gray-100 z-10" style={{width:'120px',minWidth:'120px'}}>Owner</th>
+                            <th className="px-2 py-1.5 text-left font-bold text-gray-700 sticky left-0 bg-gray-100 z-10" style={{width:'200px',minWidth:'200px',left:'120px'}}>Milestone</th>
                             {activeProjects.map(project => (
                               <th key={project.id} className="px-2 py-1.5 text-center font-bold text-gray-700 cursor-pointer hover:text-blue-600 whitespace-nowrap" onClick={() => onOpenProject(project.id)}>
                                 <div className="text-xs">{project.storeName || 'New'}</div>
@@ -3610,9 +3636,14 @@
                         </thead>
                         <tbody>
                           {mIds.map(id => {
+                            const owner = milestoneOwners[id] || '';
+                            const oc = ownerColors[owner] || {};
                             return (
-                              <tr key={id} className="border-b border-gray-200 hover:bg-gray-50">
-                                <td className="px-2 py-1.5 font-semibold text-gray-800 sticky left-0 bg-white z-10 text-xs whitespace-nowrap">{mLabels[id]}</td>
+                              <tr key={id} className="border-b border-gray-200" style={owner ? { backgroundColor: oc.bg } : {}}>
+                                <td className="px-2 py-1.5 sticky left-0 z-10" style={{ backgroundColor: oc.bg || '#fff' }}>
+                                  {owner ? <span style={{ color: oc.text, fontSize: '10px', fontWeight: 600 }}>{owner}</span> : '—'}
+                                </td>
+                                <td className="px-2 py-1.5 font-semibold text-gray-800 sticky z-10 text-xs whitespace-nowrap" style={{ left: '120px', backgroundColor: oc.bg || '#fff' }}>{mLabels[id]}</td>
                                 {activeProjects.map(project => {
                                   const fp = fullProjects[project.id];
                                   const pf = fp?.appData?.proFormaData || {};
