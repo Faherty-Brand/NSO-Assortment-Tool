@@ -3397,8 +3397,15 @@
         return prefix + ' ' + (d.getMonth()+1) + '/' + d.getDate() + '/' + String(d.getFullYear()).slice(2);
       };
 
-      const inProgressProjects = useMemo(() => filtered.filter(p => getProjectCategory(p) === 'In Progress'), [filtered, fullProjects]);
-      const completedProjects = useMemo(() => filtered.filter(p => getProjectCategory(p) === 'Completed'), [filtered, fullProjects]);
+      const sortByOpenDate = (a, b) => {
+        const da = parseOpenDate(a), db = parseOpenDate(b);
+        if (!da && !db) return 0;
+        if (!da) return 1;
+        if (!db) return -1;
+        return da - db;
+      };
+      const inProgressProjects = useMemo(() => filtered.filter(p => getProjectCategory(p) === 'In Progress').sort(sortByOpenDate), [filtered, fullProjects]);
+      const completedProjects = useMemo(() => filtered.filter(p => getProjectCategory(p) === 'Completed').sort(sortByOpenDate), [filtered, fullProjects]);
 
       const categoryConfig = {
         'In Progress': { color: 'green', dotClass: 'bg-green-600', borderClass: 'border-green-600', barColor: 'bg-green-600', projects: inProgressProjects },
