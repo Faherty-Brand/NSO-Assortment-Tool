@@ -3004,7 +3004,7 @@
       const dateOverrides = proFormaData.dateOverrides || {};
 
       // Transit-related milestones
-      const dcDeparture = addDays(openDate, -transitDays);
+      const dcDeparture = addDays(merchDate, -transitDays);
       const truckBooking = addDays(dcDeparture, -1);
       const dcPackingStarts = addDays(dcDeparture, -7);
       const allocNetsuiteImport = allocDrop;
@@ -3020,7 +3020,7 @@
         { id: 'allocNetsuiteImport', label: 'Alloc Netsuite Import', calcDate: allocNetsuiteImport, hint: 'Same as Alloc Drop' },
         { id: 'dcPackingStarts', label: 'DC Packing Starts', calcDate: dcPackingStarts, hint: 'DC Departure - 7 days' },
         { id: 'truckBooking', label: 'Truck Booking', calcDate: truckBooking, hint: 'DC Departure - 1 day' },
-        { id: 'dcDeparture', label: 'DC Departure', calcDate: dcDeparture, hint: 'Opening - ' + transitDays + ' days (transit)' },
+        { id: 'dcDeparture', label: 'DC Departure', calcDate: dcDeparture, hint: 'Merch Delivery - ' + transitDays + ' days (transit)' },
         { id: 'linesheetFinal', label: 'Linesheet Creation - FINAL', calcDate: linesheetFinal, hint: 'Merch Delivery - 10 days' },
         { id: 'merchDelivery', label: 'Merch Delivery Date', calcDate: merchDefault, hint: 'Opening - 4 days', highlight: true },
         { id: 'openingDate', label: 'Opening Date', calcDate: openDate, hint: '', highlight: true },
