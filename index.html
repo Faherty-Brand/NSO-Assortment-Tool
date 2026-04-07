@@ -2975,15 +2975,17 @@
     const computeChecklistRows = (proFormaData) => {
       const parseDate = (str) => {
         if (!str) return null;
-        const s = String(str).trim();
-        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + 'T12:00:00');
+        let s = String(str).trim();
+        // Strip day-of-week prefix like "Mon ", "Tue ", etc.
+        s = s.replace(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+/i, '');
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) { const d = new Date(s + 'T12:00:00'); return isNaN(d.getTime()) ? null : d; }
         const parts = s.split('/');
-        if (parts.length === 3) { let [m,d,y] = parts.map(Number); if (y<100) y+=y<50?2000:1900; return new Date(y,m-1,d); }
+        if (parts.length === 3) { let [m,d,y] = parts.map(Number); if (isNaN(m)||isNaN(d)||isNaN(y)) return null; if (y<100) y+=y<50?2000:1900; const dt = new Date(y,m-1,d); return isNaN(dt.getTime()) ? null : dt; }
         return null;
       };
       const addDays = (date, days) => { if (!date) return null; const d = new Date(date); d.setDate(d.getDate() + days); return d; };
       const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-      const fmtDate = (date) => { if (!date) return '—'; return dayNames[date.getDay()] + ' ' + (date.getMonth()+1) + '/' + date.getDate() + '/' + date.getFullYear(); };
+      const fmtDate = (date) => { if (!date || isNaN(date.getTime())) return '—'; return dayNames[date.getDay()] + ' ' + (date.getMonth()+1) + '/' + date.getDate() + '/' + date.getFullYear(); };
       const getFiscalQtr = (date) => { if (!date) return '—'; const m=date.getMonth(),y=date.getFullYear(); if(m>=1&&m<=3) return 'Q1 FY'+y; if(m>=4&&m<=6) return 'Q2 FY'+y; if(m>=7&&m<=9) return 'Q3 FY'+y; return m===0?'Q4 FY'+y:'Q4 FY'+(y+1); };
       const getWeekNum = (date) => { if (!date) return '—'; const oneJan=new Date(date.getFullYear(),0,1); const days=Math.floor((date-oneJan)/86400000); return 'W'+Math.ceil((days+oneJan.getDay()+1)/7); };
       const getAsstSeason = (date) => { if (!date) return '—'; const m=date.getMonth(); if(m>=1&&m<=3) return 'Spring'; if(m>=4&&m<=6) return 'Summer'; if(m>=7&&m<=9) return 'Fall'; return 'Holiday'; };
@@ -3060,7 +3062,23 @@
       const checklistNotes = data.proFormaData.checklistNotes || {};
       const today = new Date(); today.setHours(0,0,0,0);
 
-      const handleDateEdit = (row, value) => {
+      const [editingRowId, setEditingRowId] = React.useState('');
+      const [editValue, setEditValue] = React.useState('');
+
+      const plainDate = (date) => { if (!date || isNaN(date.getTime())) return ''; return (date.getMonth()+1)+'/'+date.getDate()+'/'+date.getFullYear(); };
+
+      const startEdit = (row) => {
+        let val = '';
+        if (row.isCustom) { val = (data.proFormaData.customDateRows || [])[row.customIdx]?.date || ''; }
+        else if (dateOverrides[row.id]) { const p = parseDate(dateOverrides[row.id]); val = p ? plainDate(p) : dateOverrides[row.id]; }
+        else if (row.id === 'openingDate') { const p = parseDate(data.proFormaData.newStoreOpenDate || ''); val = p ? plainDate(p) : (data.proFormaData.newStoreOpenDate || ''); }
+        else { val = row.calcDate ? plainDate(row.calcDate) : ''; }
+        setEditingRowId(row.id);
+        setEditValue(val);
+      };
+
+      const commitEdit = (row) => {
+        const value = editValue.trim();
         if (row.isCustom) {
           const updated = [...(data.proFormaData.customDateRows || [])];
           updated[row.customIdx] = { ...updated[row.customIdx], date: value };
@@ -3072,7 +3090,11 @@
         } else {
           onDataChange({ ...data, proFormaData: { ...data.proFormaData, dateOverrides: { ...(data.proFormaData.dateOverrides||{}), [row.id]: value } } });
         }
+        setEditingRowId('');
+        setEditValue('');
       };
+
+      const cancelEdit = () => { setEditingRowId(''); setEditValue(''); };
 
       const toggleComplete = (id) => {
         const updated = { ...checklistComplete, [id]: !checklistComplete[id] };
@@ -3084,10 +3106,7 @@
         onDataChange({ ...data, proFormaData: { ...data.proFormaData, checklistNotes: updated } });
       };
 
-      const getEditValue = (row) => {
-        if (row.isCustom) return (data.proFormaData.customDateRows || [])[row.customIdx]?.date || '';
-        return dateOverrides[row.id] || (row.calcDate ? fmtDate(row.calcDate) : '');
-      };
+
 
       const completedCount = rows.filter(r => checklistComplete[r.id]).length;
 
@@ -3178,7 +3197,7 @@
                   return rows.map((row) => {
                   const isDone = !!checklistComplete[row.id];
                   const isOverdue = !isDone && row.dateObj && row.dateObj < today && !row.readonly;
-                  const isEditing = (data.proFormaData._editingDateRow || '') === row.id;
+                  const isEditing = editingRowId === row.id;
                   const owner = milestoneOwners[row.id] || '';
                   const ownerStyle = ownerColors[owner] || null;
                   const rowClass = isDone ? 'bg-green-50 opacity-70' : isOverdue ? 'bg-red-50' : row.isCustom ? 'bg-yellow-50' : 'hover:bg-gray-50';
@@ -3201,7 +3220,7 @@
                       </td>
                       <td className="px-3 py-2">
                         {isEditing ? (
-                          <input type="text" value={getEditValue(row)} onChange={(e) => handleDateEdit(row, e.target.value)} onBlur={() => onDataChange({ ...data, proFormaData: { ...data.proFormaData, _editingDateRow: '' } })} onKeyDown={(e) => { if (e.key === 'Enter') onDataChange({ ...data, proFormaData: { ...data.proFormaData, _editingDateRow: '' } }); }} className="w-full px-2 py-1 border border-blue-400 rounded text-xs bg-white font-semibold" autoFocus />
+                          <input type="text" value={editValue} onChange={(e) => setEditValue(e.target.value)} onBlur={() => commitEdit(row)} onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(row); if (e.key === 'Escape') cancelEdit(); }} className="w-full px-2 py-1 border border-blue-400 rounded text-xs bg-white font-semibold" placeholder="M/D/YYYY" autoFocus />
                         ) : (
                           <span className={`text-xs ${isOverdue ? 'font-bold text-red-700' : isDone ? 'text-gray-400' : 'text-gray-700'}`}>{row.displayDate}</span>
                         )}
@@ -3211,7 +3230,7 @@
                         <input type="text" value={checklistNotes[row.id] || ''} onChange={(e) => updateNote(row.id, e.target.value)} className="w-full px-2 py-1 border border-gray-200 rounded text-xs" placeholder="Notes..." />
                       </td>
                       <td className="px-3 py-2 text-center flex items-center justify-center gap-1">
-                        {!row.readonly && !isEditing && <button onClick={() => onDataChange({ ...data, proFormaData: { ...data.proFormaData, _editingDateRow: row.id } })} className="text-gray-400 hover:text-blue-600 text-xs px-1" title="Edit">&#9998;</button>}
+                        {!row.readonly && !isEditing && <button onClick={() => startEdit(row)} className="text-gray-400 hover:text-blue-600 text-xs px-1" title="Edit">&#9998;</button>}
                         {row.isCustom && !isEditing && <button onClick={() => { const updated = (data.proFormaData.customDateRows||[]).filter((_,i) => i !== row.customIdx); onDataChange({ ...data, proFormaData: { ...data.proFormaData, customDateRows: updated } }); }} className="text-red-400 hover:text-red-600 text-xs px-1">✕</button>}
                       </td>
                     </tr>
