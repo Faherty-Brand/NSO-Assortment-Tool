@@ -4,11 +4,51 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Faherty NSO Assortment Tool</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:wght@400&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            gray: {
+              50: '#FAF9F5',
+              100: '#F5F3EE',
+              200: '#EDE8DB',
+              300: '#DDD8CE',
+              400: '#A8A29E',
+              500: '#8895A7',
+              600: '#5E6977',
+              700: '#4A5568',
+              800: '#264A73',
+              900: '#1C3554',
+            },
+            blue: {
+              50: '#E8EEF5',
+              100: '#D4DEE8',
+              200: '#A8B8CC',
+              300: '#7A93B0',
+              400: '#4A7C9B',
+              500: '#2B5F8A',
+              600: '#1C3554',
+              700: '#162B44',
+              800: '#0F1F33',
+            }
+          },
+          fontFamily: {
+            'display': ['"DM Serif Display"', 'Georgia', 'serif'],
+          }
+        }
+      }
+    }
+  </script>
+
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
@@ -48,7 +88,7 @@
         <div ref={ref} className="relative" style={{minWidth: '60px'}}>
           <button
             onClick={() => setOpen(!open)}
-            className={`w-full px-1 py-0.5 border rounded text-xs text-left truncate ${hasSelection ? 'border-blue-400 bg-blue-50 text-blue-700 font-semibold' : 'border-gray-200 bg-white text-gray-500'}`}
+            className={`w-full px-1 py-0.5 border rounded text-xs text-left truncate ${hasSelection ? 'border-[#1C3554] bg-[#E8EEF5] text-[#1C3554] font-semibold' : 'border-gray-200 bg-white text-gray-500'}`}
             title={hasSelection ? selected.join(', ') : 'All'}
           >
             {hasSelection ? (selected.length === 1 ? selected[0] : selected.length + ' selected') : 'All'}
@@ -888,7 +928,7 @@
               {(() => {
                 const isPrimarySim = (data.simStore || '') === String(data.proFormaData.compStoreName || '').trim();
                 return (
-                  <div className={`bg-white rounded-lg shadow-md p-4 border-l-4 ${isPrimarySim ? 'border-blue-500' : 'border-green-500'}`}>
+                  <div className={`bg-white rounded-lg shadow-md p-4 border-l-4 ${isPrimarySim ? 'border-blue-500' : 'border-[#4A7C9B]'}`}>
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-3">
                         <h3 className="text-lg font-bold text-green-700">Comp Store</h3>
@@ -1039,9 +1079,9 @@
                   <thead>
                     <tr className="bg-gray-100 border-b-2 border-gray-300">
                       <th className="px-4 py-2 text-left text-xs font-bold text-gray-700" style={{width:'130px'}}>Division</th>
-                      <th className="px-4 py-2 text-center text-xs font-bold text-blue-700 bg-blue-50" style={{width:'120px'}}>{data.proFormaData.newStoreName || 'New Store'}</th>
+                      <th className="px-4 py-2 text-center text-xs font-bold text-[#1C3554] bg-[#E8EEF5]" style={{width:'120px'}}>{data.proFormaData.newStoreName || 'New Store'}</th>
                       {data.proFormaData.compStoreName && (
-                        <th className="px-4 py-2 text-center text-xs font-bold text-green-700 bg-green-50" style={{width:'120px'}}>{data.proFormaData.compStoreName}</th>
+                        <th className="px-4 py-2 text-center text-xs font-bold text-[#4A7C9B] bg-[#EDF3F7]" style={{width:'120px'}}>{data.proFormaData.compStoreName}</th>
                       )}
                       {(data.proFormaData.compStoreAnalysis || []).map((comp, idx) => {
                         const name = String(comp.compStore || '').trim();
@@ -1128,7 +1168,7 @@
                       const newTotal = sumPct('__new__');
                       const compTotal = compName ? sumPct(compName) : null;
                       return (
-                        <tr className="bg-gray-800 text-white font-bold border-t-2 border-gray-600">
+                        <tr className="bg-[#1C3554] text-white font-bold border-t-2 border-[#264A73]">
                           <td className="px-4 py-2">TOTAL</td>
                           <td className={`px-4 py-2 text-center ${newTotal !== 100 && newTotal > 0 ? 'text-yellow-300' : ''}`}>{newTotal > 0 ? newTotal + '%' : '—'}</td>
                           {compName && <td className={`px-4 py-2 text-center ${compTotal !== 100 && compTotal > 0 ? 'text-yellow-300' : ''}`}>{compTotal > 0 ? compTotal + '%' : '—'}</td>}
@@ -1357,9 +1397,9 @@
                 <thead>
                   <tr className="bg-gray-100 border-b-2 border-gray-300">
                     <th className="px-4 py-2 text-left text-xs font-bold text-gray-700" style={{width:'130px'}}>Division</th>
-                    <th className="px-4 py-2 text-center text-xs font-bold text-blue-700 bg-blue-50">{data.proFormaData?.newStoreName || 'New Store'}</th>
+                    <th className="px-4 py-2 text-center text-xs font-bold text-[#1C3554] bg-[#E8EEF5]">{data.proFormaData?.newStoreName || 'New Store'}</th>
                     {data.proFormaData?.compStoreName && (
-                      <th className="px-4 py-2 text-center text-xs font-bold text-green-700 bg-green-50">{data.proFormaData.compStoreName}</th>
+                      <th className="px-4 py-2 text-center text-xs font-bold text-[#4A7C9B] bg-[#EDF3F7]">{data.proFormaData.compStoreName}</th>
                     )}
                     {(data.proFormaData?.compStoreAnalysis || []).map((comp, idx) => {
                       const name = String(comp.compStore || '').trim();
@@ -1731,7 +1771,7 @@
                         />
                         <div>
                           <h3 className="text-lg font-bold">{season}</h3>
-                          <p className={`text-sm ${allChecked ? 'text-blue-100' : 'text-gray-500'}`}>
+                          <p className={`text-sm ${allChecked ? 'text-[#A8B8CC]' : 'text-gray-500'}`}>
                             {monthKeys.length} delivery months · {sData.totalSKUs} total SKUs
                           </p>
                         </div>
@@ -2413,9 +2453,9 @@
                 <input type="file" accept=".xlsx,.xls,.csv" onChange={handleUploadEdits} className="hidden" />
               </label>
               {Object.values(filters).some(v => v && v.length > 0) && (
-                <button onClick={() => { setFilters({ sku:[], styleDescription:[], colorDescription:[], department:[], category:[], subcategory:[], deliveryMonth:[], storeTier:[], seasonalLifeCycle:[], mdExitWeek:[], action:[], notes:[] }); setPage(0); }} className="px-3 py-1.5 bg-yellow-500 text-white rounded text-xs font-semibold hover:bg-yellow-600">Clear All Filters</button>
+                <button onClick={() => { setFilters({ sku:[], styleDescription:[], colorDescription:[], department:[], category:[], subcategory:[], deliveryMonth:[], storeTier:[], seasonalLifeCycle:[], mdExitWeek:[], action:[], notes:[] }); setPage(0); }} className="px-3 py-1.5 bg-[#C9B99A] text-[#1C3554] rounded text-xs font-semibold hover:bg-[#B8A889]">Clear All Filters</button>
               )}
-              <button onClick={handleExport} className="px-3 py-1.5 bg-gray-700 text-white rounded text-xs font-semibold hover:bg-gray-800">Export Excel ↓</button>
+              <button onClick={handleExport} className="px-3 py-1.5 bg-[#1C3554] text-white rounded text-xs font-semibold hover:bg-[#264A73]">Export Excel ↓</button>
             </div>
           </div>
 
@@ -2851,7 +2891,7 @@
             <div className="overflow-x-auto">
               <table className="w-full text-xs border-collapse">
                 <thead>
-                  <tr className="bg-gray-700 text-white">
+                  <tr className="bg-[#1C3554] text-white">
                     <th className="px-2 py-2 text-left font-bold" style={{minWidth:'140px'}}>DIVISION</th>
                     <th className="px-2 py-2 text-center font-bold bg-blue-800" colSpan={3}>PLAN</th>
                     <th className="px-2 py-2 text-center font-bold bg-indigo-700" colSpan={4}>TARGET ALLOCATION</th>
@@ -2920,7 +2960,7 @@
                     );
                   })}
                   {/* TOTAL row */}
-                  <tr className="bg-gray-800 text-white font-bold border-t-2 border-gray-600">
+                  <tr className="bg-[#1C3554] text-white font-bold border-t-2 border-[#264A73]">
                     <td className="px-2 py-2">TOTAL</td>
                     <td className="px-2 py-2 text-center">{depthRows.rows.filter(r => r.isDivision).reduce((s, r) => s + (parseInt(depthTargets[r.key]) || 0), 0) || '—'}</td>
                     <td className="px-2 py-2 text-center">{depthRows.totalSkus}</td>
@@ -3675,7 +3715,7 @@
       const statusColor = (status) => {
         switch(status) {
           case 'Review Complete': return 'bg-green-100 text-green-800 border-green-200';
-          case 'Assortment Ready': return 'bg-blue-100 text-blue-800 border-blue-200';
+          case 'Assortment Ready': return 'bg-[#E8EEF5] text-[#1C3554] border-[#A8B8CC]';
           case 'Tiering Done': return 'bg-purple-100 text-purple-800 border-purple-200';
           case 'Store Setup Done': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
           default: return 'bg-gray-100 text-gray-600 border-gray-200';
@@ -3824,7 +3864,7 @@
             <div className="max-w-6xl mx-auto px-8 py-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <h1 className="text-2xl font-bold tracking-tight">Faherty NSO Assortment Tool</h1>
+                  <h1 className="text-2xl font-bold tracking-tight" style={{fontFamily: "'DM Serif Display', Georgia, serif", letterSpacing: "-0.03em"}}>Faherty NSO Assortment Tool</h1>
                   <div className="flex items-center gap-3 mt-1">
                     <p className="text-gray-400 text-sm">New Store Opening — Assortment Planning</p>
                     <span className="flex items-center gap-1 text-xs text-green-400">
@@ -3837,7 +3877,7 @@
                   <button
                     onClick={doSync}
                     disabled={syncing}
-                    className="px-4 py-2.5 bg-gray-700 text-white rounded-lg font-semibold hover:bg-gray-600 transition flex items-center gap-2 disabled:opacity-50"
+                    className="px-4 py-2.5 bg-[#264A73] text-white rounded-lg font-semibold hover:bg-[#3a6190] transition flex items-center gap-2 disabled:opacity-50"
                   >
                     {syncing ? '↻ Syncing...' : '↻ Refresh'}
                   </button>
@@ -3862,7 +3902,7 @@
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search stores..."
-                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm w-64 focus:outline-none focus:border-blue-400"
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm w-64 focus:outline-none focus:border-[#C9B99A]"
                 />
               </div>
               <div className="flex items-center gap-2">
@@ -3928,7 +3968,7 @@
             {activeProjects.length > 0 && (
               <div className="mt-10">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-bold text-gray-800">Checklist Overview</h3>
+                  <h3 className="text-lg font-bold text-gray-800 font-display">Checklist Overview</h3>
                   <button onClick={() => {
                     const mIds = ['skuCountAlignment','merchPassOff','merchFinalReview','linesheetCreation','allocReserve','depthReview','allocDrop','allocNetsuiteImport','dcPackingStarts','truckBooking','dcDeparture','linesheetFinal','merchDelivery','openingDate'];
                     const mLabels = { skuCountAlignment:'SKU Count Alignment', merchPassOff:'Merch Pass Off', merchFinalReview:'Merch Final Review', linesheetCreation:'Linesheet Creation', allocReserve:'Allocation Reserve', depthReview:'Depth Review', allocDrop:'Allocation Drop Date', allocNetsuiteImport:'Alloc Netsuite Import', dcPackingStarts:'DC Packing Starts', truckBooking:'Truck Booking', dcDeparture:'DC Departure', linesheetFinal:'Linesheet Creation - FINAL', merchDelivery:'Merch Delivery Date', openingDate:'Opening Date' };
@@ -4278,7 +4318,7 @@
         <div className="flex min-h-screen bg-gray-100">
           {/* Sidebar */}
           <div className="w-64 bg-gray-900 text-white p-6 fixed h-full overflow-y-auto flex flex-col">
-            <h1 className="text-lg font-bold mb-2">Faherty NSO Tool</h1>
+            <h1 className="text-lg font-bold mb-2" style={{fontFamily: "'DM Serif Display', Georgia, serif", letterSpacing: "-0.02em"}}>Faherty NSO Tool</h1>
 
             {/* Back to Dashboard */}
             <button
@@ -4309,7 +4349,7 @@
                   onClick={() => { if (activeProjectId) saveProject(activeProjectId, appDataRef.current); handleNext(num); }}
                   className={`w-full text-left px-4 py-3 rounded-lg transition ${
                     currentStep === num
-                      ? 'bg-blue-600 text-white font-bold'
+                      ? 'bg-[#C9B99A] text-[#1C3554] font-bold'
                       : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
                   }`}
                 >
@@ -4332,7 +4372,7 @@
                     ? 'bg-yellow-600 text-white'
                     : saveStatus === 'error'
                     ? 'bg-red-600 text-white'
-                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                    : 'bg-[#C9B99A] text-[#1C3554] hover:bg-[#B8A889]'
                 }`}
               >
                 {saveStatus === 'saved' ? '✓ Saved!' :
