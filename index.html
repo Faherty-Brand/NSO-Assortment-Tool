@@ -3545,10 +3545,12 @@
 
     const sendMagicLink = async (email) => {
       const redirectTo = window.location.origin + window.location.pathname;
-      const res = await fetch(SUPABASE_URL + '/auth/v1/otp', {
+      // Supabase REST API expects redirect_to as a query param, not nested in body
+      const url = SUPABASE_URL + '/auth/v1/otp?redirect_to=' + encodeURIComponent(redirectTo);
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'apikey': SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, create_user: true, options: { email_redirect_to: redirectTo } }),
+        body: JSON.stringify({ email, create_user: true }),
       });
       if (!res.ok) {
         let msg = 'Could not send magic link.';
