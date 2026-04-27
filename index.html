@@ -4144,7 +4144,17 @@
         return fp?.appData?.notes ?? project.notes ?? '';
       };
       const activeProjects = useMemo(() => {
-        return filtered.filter(p => { const d = parseOpenDate(p); return !d || d >= today; })
+        const milestoneIds = ['skuCountAlignment','merchPassOff','merchFinalReview','linesheetCreation','allocReserve','depthReview','allocDrop','allocNetsuiteImport','finalAllocDrop','dcPackingStarts','linesheetFinal','truckBooking','dcDeparture','merchDelivery','openingDate'];
+        return filtered.filter(p => {
+          // Keep on checklist if no open date, or open date is today/future,
+          // OR open date has passed but not all checklist milestones are checked yet
+          const d = parseOpenDate(p);
+          if (!d || d >= today) return true;
+          const fp = fullProjects[p.id];
+          const cc = fp?.appData?.proFormaData?.checklistComplete || {};
+          const allChecked = milestoneIds.every(id => !!cc[id]);
+          return !allChecked;
+        })
           .filter(p => includeSpecialInChecklist || !isProjectSpecial(p))
           .sort((a, b) => {
             const da = parseOpenDate(a);
