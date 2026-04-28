@@ -1510,11 +1510,22 @@
                   return findTierForStore(simName, divData);
                 };
 
+                // Format raw tier values (e.g. "2", "3+") as "Tier 2", "Tier 3+"
+                // to match the dropdown <option value> format. Pass through if
+                // already formatted (old projects) or non-numeric (e.g. "Inspo").
+                const formatForDropdown = (v) => {
+                  if (!v) return '';
+                  const s = String(v).trim();
+                  if (/^tier\b/i.test(s)) return s;
+                  if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
+                  return s;
+                };
+
                 return {
-                  mens: getTierWithFallback(parsed.mensData),
-                  womens: getTierWithFallback(parsed.womensData),
-                  nonApparel: getTierWithFallback(parsed.nonApparel),
-                  kids: getTierWithFallback(parsed.kidsData),
+                  mens: formatForDropdown(getTierWithFallback(parsed.mensData)),
+                  womens: formatForDropdown(getTierWithFallback(parsed.womensData)),
+                  nonApparel: formatForDropdown(getTierWithFallback(parsed.nonApparel)),
+                  kids: formatForDropdown(getTierWithFallback(parsed.kidsData)),
                 };
               })(),
               step2Complete: true,
@@ -1658,6 +1669,16 @@
                     const compName = String(data.proFormaData?.compStoreName || '').trim();
                     const compTier = lookupTier(compName, td[div.dataKey]);
 
+                    // Format raw tier value ("2", "3+") as "Tier 2", "Tier 3+"
+                    // while leaving placeholders ("—") and labels ("Inspo", "Tier 1") alone.
+                    const formatTier = (v) => {
+                      if (!v || v === '—') return v;
+                      const s = String(v).trim();
+                      if (/^tier\b/i.test(s)) return s; // already formatted
+                      if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
+                      return s;
+                    };
+
                     return (
                       <tr key={div.key} className="border-b border-gray-200 hover:bg-gray-50">
                         <td className="px-4 py-2 font-semibold text-gray-800">{div.label}</td>
@@ -1672,19 +1693,20 @@
                             <option value="Tier 1">Tier 1</option>
                             <option value="Tier 2">Tier 2</option>
                             <option value="Tier 3">Tier 3</option>
+                            <option value="Tier 4">Tier 4</option>
                             <option value="Inspo">Inspo</option>
                           </select>
                         </td>
                         {/* Primary Comp Store — read-only from tiering data */}
                         {compName && (
-                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{compTier}</td>
+                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{formatTier(compTier)}</td>
                         )}
                         {/* Additional Comp Stores */}
                         {(data.proFormaData?.compStoreAnalysis || []).map((comp, idx) => {
                           const name = String(comp.compStore || '').trim();
                           if (!name || name === compName) return null;
                           const tier = lookupTier(name, td[div.dataKey]);
-                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{tier}</td>;
+                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{formatTier(tier)}</td>;
                         })}
                       </tr>
                     );
