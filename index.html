@@ -2166,7 +2166,7 @@
             if (inv) {
               return { ...r, source: 'both', onHand: inv.onHand || 0, priceLevel: inv.priceLevel || '', defaultAction: 'Keep' };
             }
-            return { ...r, source: 'pst', onHand: 0, priceLevel: '', defaultAction: 'Add' };
+            return { ...r, source: 'pst', onHand: 0, priceLevel: '', defaultAction: 'Keep' };
           });
           // Build a lookup of the FULL PST (all deliveries, all tiers) keyed by SKU —
           // used to enrich inventory-only SKUs that exist in PST but under an unselected delivery.
@@ -2205,7 +2205,7 @@
                 source: 'inventory',
                 onHand: inv.onHand || 0,
                 priceLevel: inv.priceLevel || '',
-                defaultAction: 'Extract',
+                defaultAction: 'Keep',
               });
             } else {
               // SKU isn't in PST at all — use whatever the OH file gave us.
@@ -2224,7 +2224,7 @@
                 source: 'inventory',
                 onHand: inv.onHand || 0,
                 priceLevel: inv.priceLevel || '',
-                defaultAction: 'Extract',
+                defaultAction: 'Keep',
               });
             }
           });
