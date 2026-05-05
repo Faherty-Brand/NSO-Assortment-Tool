@@ -837,6 +837,11 @@
       const cStyle = findCol(['style number', 'style #', 'style']);
       const cDesc = findCol(['style description', 'description', 'desc', 'name']);
       const cPriceLevel = findCol(['price level', 'price status', 'markdown status', 'md status', 'pricing', 'price']);
+      const cDivision = findCol(['division', 'department', 'dept']);
+      const cCategory = findCol(['category', 'class']);
+      const cSubcategory = findCol(['subcategory', 'sub-category', 'sub category', 'subclass', 'sub-class']);
+      const cColor = findCol(['color description', 'color desc', 'colour description', 'colour desc', 'color', 'colour']);
+      const cSeasonalLC = findCol(['seasonal lifecycle', 'seasnal lifecycle', 'seasonal life cycle', 'lifecycle', 'life cycle', 'seasonal lc', 'lc']);
 
       if (cSKU < 0) throw new Error('SKU column not found in inventory file.');
       if (cOH < 0) throw new Error('On-hand column not found. Expected a column named OH, On Hand, or Qty.');
@@ -855,6 +860,11 @@
           style: cStyle >= 0 ? String(row[cStyle] || '').trim() : '',
           description: cDesc >= 0 ? String(row[cDesc] || '').trim() : '',
           priceLevel: cPriceLevel >= 0 ? String(row[cPriceLevel] || '').trim() : '',
+          division: cDivision >= 0 ? String(row[cDivision] || '').trim() : '',
+          category: cCategory >= 0 ? String(row[cCategory] || '').trim() : '',
+          subcategory: cSubcategory >= 0 ? String(row[cSubcategory] || '').trim() : '',
+          colorDescription: cColor >= 0 ? String(row[cColor] || '').trim() : '',
+          seasonalLifeCycle: cSeasonalLC >= 0 ? String(row[cSeasonalLC] || '').trim() : '',
         });
       }
       return inventoryData;
@@ -2090,6 +2100,8 @@
         seasonalLifeCycle: [],
         mdExitWeek: [],
         priceLevel: [],
+        onHand: [],
+        source: [],
         action: [],
         notes: [],
       });
@@ -2179,9 +2191,16 @@
             if (pstMeta) {
               // SKU is in PST but under an unselected delivery — pull in metadata
               // for filtering/display, but blank out the Delivery field since
-              // those deliveries are out of scope for this project.
+              // those deliveries are out of scope. OH file values win for fields
+              // it has populated (current state of the store > old PST snapshots).
               withInventory.push({
                 ...pstMeta,
+                department: inv.division || pstMeta.department || '',
+                category: inv.category || pstMeta.category || '',
+                subcategory: inv.subcategory || pstMeta.subcategory || '',
+                colorDescription: inv.colorDescription || pstMeta.colorDescription || '',
+                seasonalLifeCycle: inv.seasonalLifeCycle || pstMeta.seasonalLifeCycle || '',
+                styleDescription: pstMeta.styleDescription || inv.description || '',
                 deliveryMonth: '',
                 source: 'inventory',
                 onHand: inv.onHand || 0,
@@ -2189,18 +2208,18 @@
                 defaultAction: 'Extract',
               });
             } else {
-              // SKU isn't in PST at all — show whatever the OH file gave us.
+              // SKU isn't in PST at all — use whatever the OH file gave us.
               withInventory.push({
                 sku: inv.sku,
                 style: inv.style || '',
                 styleDescription: inv.description || '',
-                colorDescription: '',
-                department: '',
-                category: '',
-                subcategory: '',
+                colorDescription: inv.colorDescription || '',
+                department: inv.division || '',
+                category: inv.category || '',
+                subcategory: inv.subcategory || '',
                 deliveryMonth: '',
                 storeTier: '',
-                seasonalLifeCycle: '',
+                seasonalLifeCycle: inv.seasonalLifeCycle || '',
                 mdExitWeek: '',
                 source: 'inventory',
                 onHand: inv.onHand || 0,
@@ -2232,6 +2251,8 @@
         seasonalLifeCycle: [...new Set(baseData.map(r => r.seasonalLifeCycle).filter(Boolean))].sort(),
         mdExitWeek: [...new Set(baseData.map(r => r.mdExitWeek).filter(Boolean))].sort(),
         priceLevel: [...new Set(baseData.map(r => r.priceLevel).filter(Boolean))].sort(),
+        onHand: [...new Set(baseData.map(r => String(r.onHand ?? 0)))].sort((a,b) => Number(a) - Number(b)),
+        source: [...new Set(baseData.map(r => r.source).filter(Boolean))].sort(),
         notes: [...new Set(baseData.map(r => skuNotes[r.sku]).filter(Boolean))].sort(),
       }), [baseData, skuNotes]);
 
@@ -2255,6 +2276,8 @@
           if (filters.seasonalLifeCycle.length && !filters.seasonalLifeCycle.includes(row.seasonalLifeCycle)) return false;
           if (filters.mdExitWeek.length && !filters.mdExitWeek.includes(row.mdExitWeek)) return false;
           if (filters.priceLevel.length && !filters.priceLevel.includes(row.priceLevel || '')) return false;
+          if (filters.onHand.length && !filters.onHand.includes(String(row.onHand ?? 0))) return false;
+          if (filters.source.length && !filters.source.includes(row.source || '')) return false;
           if (filters.action.length) {
             const act = getAction(row);
             if (!filters.action.includes(act)) return false;
@@ -2837,13 +2860,13 @@
                     {data.isSpecial && (data.inventoryData || []).length > 0 && (
                       <React.Fragment>
                         <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.priceLevel} selected={filters.priceLevel} onChange={(v) => setFilter('priceLevel', v)} /></th>
-                        <th className="px-1 py-1"></th>
+                        <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.onHand} selected={filters.onHand} onChange={(v) => setFilter('onHand', v)} /></th>
                       </React.Fragment>
                     )}
                     <th className="px-1 py-1"><MultiSelectFilter options={data.isSpecial && (data.inventoryData || []).length > 0 ? ['Keep', 'Drop', 'Add', 'Extract'] : ['Keep', 'Drop', 'Add']} selected={filters.action} onChange={(v) => setFilter('action', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.notes} selected={filters.notes} onChange={(v) => setFilter('notes', v)} /></th>
                     {data.isSpecial && (data.inventoryData || []).length > 0 && (
-                      <th className="px-1 py-1"></th>
+                      <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.source} selected={filters.source} onChange={(v) => setFilter('source', v)} /></th>
                     )}
                   </tr>
                 </thead>
