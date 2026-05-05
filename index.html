@@ -499,148 +499,6 @@
           totalRollup: [],
         };
 
-        // ============================================================
-        // FORMAT DETECTION
-        // The new "Store Grid" format is a single sheet with all data:
-        //   - Columns: Store Name | Region | Area | Vibe | # Groups | <group columns with X marks>
-        //   - Includes "Mens Tier 1/2/2+/3/3+/4/4+" and "Womens Tier 1/2/2+/..." columns
-        //   - No tier data for Non Apparel or Kids
-        // The old "Store Tiering Tool" format had separate sheets per division.
-        // ============================================================
-        const detectNewFormat = () => {
-          for (const sheetName of workbook.SheetNames) {
-            const sheet = workbook.Sheets[sheetName];
-            const firstRow = XLSX.utils.sheet_to_json(sheet, { header: 1, range: 0 })[0];
-            if (!Array.isArray(firstRow)) continue;
-            const headerLower = firstRow.map(c => String(c || '').toLowerCase().trim());
-            // New-format signature: "store name" + at least one mens/womens tier column
-            const hasStoreName = headerLower.some(h => h === 'store name' || h === 'store');
-            const hasMensTier = headerLower.some(h => /^mens tier \d/.test(h));
-            const hasWomensTier = headerLower.some(h => /^womens tier \d/.test(h));
-            if (hasStoreName && (hasMensTier || hasWomensTier)) {
-              return sheetName;
-            }
-          }
-          return null;
-        };
-
-        const newFormatSheetName = detectNewFormat();
-
-        if (newFormatSheetName) {
-          // ============================================================
-          // NEW FORMAT: Single-sheet Store Grid
-          // ============================================================
-          const sheet = workbook.Sheets[newFormatSheetName];
-          const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-          if (rawData.length === 0) return result;
-
-          const headers = rawData[0].map(h => String(h || '').trim());
-          const headerLower = headers.map(h => h.toLowerCase());
-
-          // Locate key columns
-          const findCol = (predicate) => headerLower.findIndex(predicate);
-          const storeCol = findCol(h => h === 'store name' || h === 'store' || h === 'location' || h === 'location name');
-          const regionCol = findCol(h => h === 'region');
-          const areaCol = findCol(h => h === 'area');
-          const vibeCol = findCol(h => h === 'vibe');
-
-          // Mens & Womens tier columns: capture all tier columns (with or without "+")
-          // We'll derive each store's tier as the HIGHEST tier marked X.
-          // Rationale: "Tier 4+" with X means "tier 4 or higher" — if a store
-          // has 2+, 3+, 4+ marked but no plain tier, it's a Tier 4 store.
-          const mensTierCols = [];
-          const womensTierCols = [];
-          headers.forEach((h, i) => {
-            const lh = h.toLowerCase();
-            // Match "mens tier N" with optional "+"
-            const mMatch = lh.match(/^mens tier (\d)\+?$/);
-            const wMatch = lh.match(/^womens tier (\d)\+?$/);
-            if (mMatch) mensTierCols.push({ tier: mMatch[1], col: i });
-            if (wMatch) womensTierCols.push({ tier: wMatch[1], col: i });
-          });
-          // Sort descending so the first X-marked column wins (highest tier)
-          mensTierCols.sort((a, b) => Number(b.tier) - Number(a.tier));
-          womensTierCols.sort((a, b) => Number(b.tier) - Number(a.tier));
-
-          // Group columns = everything that isn't store metadata
-          // We treat ALL X-mark columns as available groups (including tier columns,
-          // since "Mens Tier 3+" etc. are themselves valid group selections in the matrix)
-          const metadataCols = new Set([storeCol, regionCol, areaCol, vibeCol].filter(c => c >= 0));
-          // Also exclude "# Groups" type columns (numeric counts, not X marks)
-          headers.forEach((h, i) => {
-            const lh = h.toLowerCase();
-            if (lh === '# groups' || lh === 'groups' || lh === 'group count') metadataCols.add(i);
-          });
-
-          const groupNames = [];
-          const groupCols = [];
-          headers.forEach((h, i) => {
-            if (!h || metadataCols.has(i)) return;
-            groupNames.push(h);
-            groupCols.push(i);
-          });
-          result.storeGroups = groupNames;
-
-          const isX = (v) => v != null && String(v).trim().toUpperCase() === 'X';
-
-          // Walk store rows
-          for (let i = 1; i < rawData.length; i++) {
-            const row = rawData[i];
-            if (!Array.isArray(row)) continue;
-            const storeNameRaw = storeCol >= 0 ? row[storeCol] : row[0];
-            if (!storeNameRaw) continue;
-            const storeName = String(storeNameRaw).trim();
-            if (!storeName) continue;
-            // Skip total/summary rows
-            const slow = storeName.toLowerCase();
-            if (slow === 'total' || slow.startsWith('total ') || slow.includes('median') || slow.includes('grand total')) continue;
-
-            result.allStores.push(storeName);
-
-            // Build the groups list for storeMatrix
-            const groups = [];
-            groupCols.forEach((col, idx) => {
-              if (isX(row[col])) groups.push(groupNames[idx]);
-            });
-            result.storeMatrix[storeName] = groups;
-
-            // Derive Mens tier: lowest-numbered non-"+" tier marked X
-            let mensTier = '';
-            for (const t of mensTierCols) {
-              if (isX(row[t.col])) { mensTier = t.tier; break; }
-            }
-            // Derive Womens tier: same approach
-            let womensTier = '';
-            for (const t of womensTierCols) {
-              if (isX(row[t.col])) { womensTier = t.tier; break; }
-            }
-
-            // Build division row objects in a shape compatible with the existing
-            // downstream consumers (which look for "Store" and a "Proposed Tier"
-            // or "Override Tier" column via case-insensitive substring matching).
-            const baseRow = {
-              'Store': storeName,
-              'Region': regionCol >= 0 ? (row[regionCol] || '') : '',
-              'Area': areaCol >= 0 ? (row[areaCol] || '') : '',
-              'Vibe': vibeCol >= 0 ? (row[vibeCol] || '') : '',
-            };
-            if (mensTier) {
-              result.mensData.push({ ...baseRow, 'Proposed Tier': mensTier });
-            }
-            if (womensTier) {
-              result.womensData.push({ ...baseRow, 'Proposed Tier': womensTier });
-            }
-            // Per requirement 1A: leave Non Apparel and Kids tier data empty in the
-            // new format (the new Store Grid does not provide tiers for them).
-          }
-
-          return result;
-        }
-
-        // ============================================================
-        // OLD FORMAT: Multi-sheet Store Tiering Tool
-        // ============================================================
-
         // Parse Attributes Upload
         if (workbook.SheetNames.includes('Attributes Upload')) {
           const sheet = workbook.Sheets['Attributes Upload'];
@@ -897,6 +755,43 @@
         console.error('Error parsing PST:', error);
         return [];
       }
+    };
+
+    // Sort & format a delivery-month string. Accepts either a comma-separated string
+    // ("August, June") or an array of months. Returns "June, August" with months in
+    // calendar order. Handles "may_1", "may_2" suffixes (sorted by their numeric tail
+    // within the same month). Unknown tokens fall to the end alphabetically.
+    const sortDeliveryMonths = (input) => {
+      if (!input) return '';
+      const monthOrder = {
+        january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+        july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+      };
+      const parts = (Array.isArray(input) ? input : String(input).split(','))
+        .map(s => String(s).trim())
+        .filter(Boolean);
+      const seen = new Set();
+      const unique = parts.filter(p => {
+        const key = p.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      unique.sort((a, b) => {
+        const al = a.toLowerCase();
+        const bl = b.toLowerCase();
+        const aBase = al.replace(/_\d+$/, '');
+        const bBase = bl.replace(/_\d+$/, '');
+        const aOrd = monthOrder[aBase] ?? 99;
+        const bOrd = monthOrder[bBase] ?? 99;
+        if (aOrd !== bOrd) return aOrd - bOrd;
+        // Same month — sort by trailing _N (treat absence as 0)
+        const aTail = parseInt((al.match(/_(\d+)$/) || [])[1] || '0', 10);
+        const bTail = parseInt((bl.match(/_(\d+)$/) || [])[1] || '0', 10);
+        if (aTail !== bTail) return aTail - bTail;
+        return al.localeCompare(bl);
+      });
+      return unique.join(', ');
     };
 
     // Parse inventory/OH file for Special Projects (remodels)
@@ -1510,22 +1405,11 @@
                   return findTierForStore(simName, divData);
                 };
 
-                // Format raw tier values (e.g. "2", "3+") as "Tier 2", "Tier 3+"
-                // to match the dropdown <option value> format. Pass through if
-                // already formatted (old projects) or non-numeric (e.g. "Inspo").
-                const formatForDropdown = (v) => {
-                  if (!v) return '';
-                  const s = String(v).trim();
-                  if (/^tier\b/i.test(s)) return s;
-                  if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
-                  return s;
-                };
-
                 return {
-                  mens: formatForDropdown(getTierWithFallback(parsed.mensData)),
-                  womens: formatForDropdown(getTierWithFallback(parsed.womensData)),
-                  nonApparel: formatForDropdown(getTierWithFallback(parsed.nonApparel)),
-                  kids: formatForDropdown(getTierWithFallback(parsed.kidsData)),
+                  mens: getTierWithFallback(parsed.mensData),
+                  womens: getTierWithFallback(parsed.womensData),
+                  nonApparel: getTierWithFallback(parsed.nonApparel),
+                  kids: getTierWithFallback(parsed.kidsData),
                 };
               })(),
               step2Complete: true,
@@ -1669,16 +1553,6 @@
                     const compName = String(data.proFormaData?.compStoreName || '').trim();
                     const compTier = lookupTier(compName, td[div.dataKey]);
 
-                    // Format raw tier value ("2", "3+") as "Tier 2", "Tier 3+"
-                    // while leaving placeholders ("—") and labels ("Inspo", "Tier 1") alone.
-                    const formatTier = (v) => {
-                      if (!v || v === '—') return v;
-                      const s = String(v).trim();
-                      if (/^tier\b/i.test(s)) return s; // already formatted
-                      if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
-                      return s;
-                    };
-
                     return (
                       <tr key={div.key} className="border-b border-gray-200 hover:bg-gray-50">
                         <td className="px-4 py-2 font-semibold text-gray-800">{div.label}</td>
@@ -1693,20 +1567,19 @@
                             <option value="Tier 1">Tier 1</option>
                             <option value="Tier 2">Tier 2</option>
                             <option value="Tier 3">Tier 3</option>
-                            <option value="Tier 4">Tier 4</option>
                             <option value="Inspo">Inspo</option>
                           </select>
                         </td>
                         {/* Primary Comp Store — read-only from tiering data */}
                         {compName && (
-                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{formatTier(compTier)}</td>
+                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{compTier}</td>
                         )}
                         {/* Additional Comp Stores */}
                         {(data.proFormaData?.compStoreAnalysis || []).map((comp, idx) => {
                           const name = String(comp.compStore || '').trim();
                           if (!name || name === compName) return null;
                           const tier = lookupTier(name, td[div.dataKey]);
-                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{formatTier(tier)}</td>;
+                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{tier}</td>;
                         })}
                       </tr>
                     );
@@ -1868,6 +1741,8 @@
             onDataChange({
               ...data,
               pstData: parsed,
+              pstFileName: file.name,
+              pstUploadedAt: new Date().toISOString(),
               selectedDeliveries: autoSelectedDeliveries.length > 0 ? autoSelectedDeliveries : (data.selectedDeliveries || []),
               step3Complete: true,
             });
@@ -2019,18 +1894,58 @@
           )}
 
           <div className="mb-8">
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-gray-400 transition"
-              onClick={() => fileInputRef.current?.click()}>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-              <div className="text-lg font-semibold text-gray-700">Upload PST (.xlsx)</div>
-              <p className="text-sm text-gray-500 mt-2">Click or drag PST file</p>
-            </div>
+            {(data.pstData || []).length === 0 ? (
+              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-gray-400 transition"
+                onClick={() => fileInputRef.current?.click()}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                <div className="text-lg font-semibold text-gray-700">Upload PST (.xlsx)</div>
+                <p className="text-sm text-gray-500 mt-2">Click or drag PST file</p>
+              </div>
+            ) : (
+              <div className="bg-white border border-gray-300 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs font-semibold">✓ Loaded</span>
+                    <span className="text-sm font-semibold text-gray-700">{data.pstFileName || 'PST.xlsx'}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-xs font-semibold text-[#1C3554] hover:text-[#162B44]"
+                    >↻ Replace file</button>
+                    <button
+                      onClick={() => {
+                        if (!confirm('Clear the PST file? This will reset delivery selections and Step 4 review actions.')) return;
+                        const next = { ...data };
+                        delete next.pstData;
+                        delete next.pstFileName;
+                        delete next.selectedDeliveries;
+                        next.step3Complete = false;
+                        onDataChange(next);
+                      }}
+                      className="text-xs font-semibold text-gray-400 hover:text-red-600"
+                    >Clear</button>
+                  </div>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                <div className="flex gap-6 text-xs text-gray-600">
+                  <span><strong className="text-gray-900 font-semibold">{(data.pstData || []).length.toLocaleString()}</strong> rows loaded</span>
+                  <span><strong className="text-gray-900 font-semibold">{new Set((data.pstData || []).map(r => `${r.seasonCode}:${r.deliveryMonth}`).filter(k => k !== ':')).size}</strong> unique deliveries</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Auto-selection info */}
@@ -2210,17 +2125,17 @@
             row.storeTier === 'ALL STORES';
           return matchesDelivery && matchesTier;
         });
-        // Deduplicate by SKU — merge delivery months
+        // Deduplicate by SKU — merge delivery months in calendar order
         const skuMap = new Map();
         matched.forEach(row => {
+          const dm = String(row.deliveryMonth || '').trim();
           if (skuMap.has(row.sku)) {
             const existing = skuMap.get(row.sku);
-            const dm = String(row.deliveryMonth || '').trim();
-            if (dm && !existing.deliveryMonth.includes(dm)) {
-              existing.deliveryMonth = existing.deliveryMonth + ', ' + dm;
+            if (dm) {
+              existing.deliveryMonth = sortDeliveryMonths(existing.deliveryMonth + ', ' + dm);
             }
           } else {
-            skuMap.set(row.sku, { ...row, deliveryMonth: String(row.deliveryMonth || '').trim() });
+            skuMap.set(row.sku, { ...row, deliveryMonth: sortDeliveryMonths(dm) });
           }
         });
         const deduped = [...skuMap.values()];
@@ -2246,14 +2161,14 @@
           const fullPstBySku = new Map();
           (data.pstData || []).forEach(row => {
             if (!row.sku) return;
+            const dm = String(row.deliveryMonth || '').trim();
             if (fullPstBySku.has(row.sku)) {
               const existing = fullPstBySku.get(row.sku);
-              const dm = String(row.deliveryMonth || '').trim();
-              if (dm && !existing.deliveryMonth.includes(dm)) {
-                existing.deliveryMonth = existing.deliveryMonth + ', ' + dm;
+              if (dm) {
+                existing.deliveryMonth = sortDeliveryMonths(existing.deliveryMonth + ', ' + dm);
               }
             } else {
-              fullPstBySku.set(row.sku, { ...row, deliveryMonth: String(row.deliveryMonth || '').trim() });
+              fullPstBySku.set(row.sku, { ...row, deliveryMonth: sortDeliveryMonths(dm) });
             }
           });
           // Add inventory-only SKUs (not in the selected PST slice). Enrich with full-PST metadata if available.
@@ -2262,9 +2177,12 @@
             if (pstSkus.has(inv.sku)) return;
             const pstMeta = fullPstBySku.get(inv.sku);
             if (pstMeta) {
-              // SKU is in PST but under an unselected delivery — pull in all metadata.
+              // SKU is in PST but under an unselected delivery — pull in metadata
+              // for filtering/display, but blank out the Delivery field since
+              // those deliveries are out of scope for this project.
               withInventory.push({
                 ...pstMeta,
+                deliveryMonth: '',
                 source: 'inventory',
                 onHand: inv.onHand || 0,
                 priceLevel: inv.priceLevel || '',
@@ -2882,13 +2800,6 @@
                   <tr className="bg-gray-100 border-b border-gray-300">
                     <th className="px-1 py-1.5 text-left" style={{width:'30px'}}><input type="checkbox" onChange={(e) => { e.target.checked ? setSelectedRows(new Set(paginatedData.map((_, i) => i))) : setSelectedRows(new Set()); }} className="w-3.5 h-3.5" /></th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">SKU</th>
-                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
-                      <React.Fragment>
-                        <th className="px-1 py-1.5 text-left text-xs font-bold">Source</th>
-                        <th className="px-1 py-1.5 text-right text-xs font-bold">OH</th>
-                        <th className="px-1 py-1.5 text-left text-xs font-bold">Price Level</th>
-                      </React.Fragment>
-                    )}
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Division</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Category</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Subcategory</th>
@@ -2898,20 +2809,22 @@
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Delivery</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Store Tier</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">MD Exit Wk</th>
+                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
+                      <React.Fragment>
+                        <th className="px-1 py-1.5 text-left text-xs font-bold">Price Level</th>
+                        <th className="px-1 py-1.5 text-right text-xs font-bold">OH</th>
+                      </React.Fragment>
+                    )}
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Action</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Notes</th>
+                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
+                      <th className="px-1 py-1.5 text-left text-xs font-bold">Source</th>
+                    )}
                   </tr>
                   {/* Filter row */}
                   <tr className="bg-gray-50 border-b-2 border-gray-300">
                     <th className="px-1 py-1"></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.sku} selected={filters.sku} onChange={(v) => setFilter('sku', v)} /></th>
-                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
-                      <React.Fragment>
-                        <th className="px-1 py-1"></th>
-                        <th className="px-1 py-1"></th>
-                        <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.priceLevel} selected={filters.priceLevel} onChange={(v) => setFilter('priceLevel', v)} /></th>
-                      </React.Fragment>
-                    )}
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.department} selected={filters.department} onChange={(v) => setFilter('department', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.category} selected={filters.category} onChange={(v) => setFilter('category', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.subcategory} selected={filters.subcategory} onChange={(v) => setFilter('subcategory', v)} /></th>
@@ -2921,8 +2834,17 @@
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.deliveryMonth} selected={filters.deliveryMonth} onChange={(v) => setFilter('deliveryMonth', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.storeTier} selected={filters.storeTier} onChange={(v) => setFilter('storeTier', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.mdExitWeek} selected={filters.mdExitWeek} onChange={(v) => setFilter('mdExitWeek', v)} /></th>
+                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
+                      <React.Fragment>
+                        <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.priceLevel} selected={filters.priceLevel} onChange={(v) => setFilter('priceLevel', v)} /></th>
+                        <th className="px-1 py-1"></th>
+                      </React.Fragment>
+                    )}
                     <th className="px-1 py-1"><MultiSelectFilter options={data.isSpecial && (data.inventoryData || []).length > 0 ? ['Keep', 'Drop', 'Add', 'Extract'] : ['Keep', 'Drop', 'Add']} selected={filters.action} onChange={(v) => setFilter('action', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.notes} selected={filters.notes} onChange={(v) => setFilter('notes', v)} /></th>
+                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
+                      <th className="px-1 py-1"></th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -2943,21 +2865,6 @@
                       <tr key={idx} className={`${bgColor} border-b border-gray-200`}>
                         <td className="px-2 py-1.5"><input type="checkbox" checked={selectedRows.has(idx)} onChange={() => handleRowSelect(idx)} className="w-3.5 h-3.5" /></td>
                         <td className="px-2 py-1.5 text-xs font-mono">{row.sku}</td>
-                        {showInv && (
-                          <React.Fragment>
-                            <td className="px-2 py-1.5 text-xs">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${sourcePillClass}`}>{sourceLabel}</span>
-                            </td>
-                            <td className="px-2 py-1.5 text-xs text-right font-mono">{row.onHand > 0 ? row.onHand : <span className="text-gray-300">—</span>}</td>
-                            <td className="px-2 py-1.5 text-xs">
-                              {row.priceLevel ? (
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${/markdown|\bmd\b|sale|clearance/i.test(row.priceLevel) ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'}`}>{row.priceLevel}</span>
-                              ) : (
-                                <span className="text-gray-300">—</span>
-                              )}
-                            </td>
-                          </React.Fragment>
-                        )}
                         <td className="px-2 py-1.5 text-xs">{row.department}</td>
                         <td className="px-2 py-1.5 text-xs">{row.category}</td>
                         <td className="px-2 py-1.5 text-xs">{row.subcategory}</td>
@@ -2967,6 +2874,18 @@
                         <td className="px-2 py-1.5 text-xs">{row.deliveryMonth}</td>
                         <td className="px-2 py-1.5 text-xs">{row.storeTier}</td>
                         <td className="px-2 py-1.5 text-xs">{row.mdExitWeek}</td>
+                        {showInv && (
+                          <React.Fragment>
+                            <td className="px-2 py-1.5 text-xs">
+                              {row.priceLevel ? (
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${/markdown|\bmd\b|sale|clearance/i.test(row.priceLevel) ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'}`}>{row.priceLevel}</span>
+                              ) : (
+                                <span className="text-gray-300">—</span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 text-xs text-right font-mono">{row.onHand > 0 ? row.onHand : <span className="text-gray-300">—</span>}</td>
+                          </React.Fragment>
+                        )}
                         <td className="px-2 py-1.5">
                           <select value={action} onChange={(e) => handleActionChange(row.sku, e.target.value)} className="px-1 py-0.5 border border-gray-300 rounded text-xs">
                             <option value="Keep">Keep</option>
@@ -2976,6 +2895,11 @@
                           </select>
                         </td>
                         <td className="px-2 py-1.5"><input type="text" value={skuNotes[row.sku] || ''} onChange={(e) => handleNoteChange(row.sku, e.target.value)} placeholder="Notes..." className="w-full px-1 py-0.5 border border-gray-300 rounded text-xs" /></td>
+                        {showInv && (
+                          <td className="px-2 py-1.5 text-xs">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${sourcePillClass}`}>{sourceLabel}</span>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
