@@ -1541,11 +1541,23 @@
                   return findTierForStore(simName, divData);
                 };
 
+                // Format raw tier values (e.g. "2", "3+") as "Tier 2", "Tier 3+"
+                // so they match the dropdown <option value> format. Pass through
+                // already-formatted values and non-numeric labels unchanged.
+                const formatForDropdown = (v) => {
+                  if (!v) return '';
+                  const s = String(v).trim();
+                  if (!s) return '';
+                  if (/^tier\b/i.test(s)) return s;
+                  if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
+                  return s;
+                };
+
                 return {
-                  mens: getTierWithFallback(parsed.mensData),
-                  womens: getTierWithFallback(parsed.womensData),
-                  nonApparel: getTierWithFallback(parsed.nonApparel),
-                  kids: getTierWithFallback(parsed.kidsData),
+                  mens: formatForDropdown(getTierWithFallback(parsed.mensData)),
+                  womens: formatForDropdown(getTierWithFallback(parsed.womensData)),
+                  nonApparel: formatForDropdown(getTierWithFallback(parsed.nonApparel)),
+                  kids: formatForDropdown(getTierWithFallback(parsed.kidsData)),
                 };
               })(),
               step2Complete: true,
@@ -1695,6 +1707,18 @@
                     const compName = String(data.proFormaData?.compStoreName || '').trim();
                     const compTier = lookupTier(compName, td[div.dataKey]);
 
+                    // Format raw tier values ("2", "3+") as "Tier 2", "Tier 3+".
+                    // Pass through placeholders ("—"), already-formatted values ("Tier 1"),
+                    // and non-numeric labels ("Inspo") unchanged.
+                    const formatTier = (v) => {
+                      if (!v || v === '—') return v || '';
+                      const s = String(v).trim();
+                      if (!s) return '';
+                      if (/^tier\b/i.test(s)) return s;
+                      if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
+                      return s;
+                    };
+
                     return (
                       <tr key={div.key} className="border-b border-gray-200 hover:bg-gray-50">
                         <td className="px-4 py-2 font-semibold text-gray-800">{div.label}</td>
@@ -1709,19 +1733,20 @@
                             <option value="Tier 1">Tier 1</option>
                             <option value="Tier 2">Tier 2</option>
                             <option value="Tier 3">Tier 3</option>
+                            <option value="Tier 4">Tier 4</option>
                             <option value="Inspo">Inspo</option>
                           </select>
                         </td>
                         {/* Primary Comp Store — read-only from tiering data */}
                         {compName && (
-                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{compTier}</td>
+                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{formatTier(compTier)}</td>
                         )}
                         {/* Additional Comp Stores */}
                         {(data.proFormaData?.compStoreAnalysis || []).map((comp, idx) => {
                           const name = String(comp.compStore || '').trim();
                           if (!name || name === compName) return null;
                           const tier = lookupTier(name, td[div.dataKey]);
-                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{tier}</td>;
+                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{formatTier(tier)}</td>;
                         })}
                       </tr>
                     );
@@ -3432,6 +3457,61 @@
                 >
                   Download Template
                 </button>
+                {dataLoaded && (
+                  <button
+                    onClick={() => {
+                      // Export the currently loaded allocation data, joined to SKU metadata
+                      // from the assortment so you can verify the upload took correctly.
+                      const bySku = new Map();
+                      filteredData.forEach(r => { if (r.sku && !bySku.has(r.sku)) bySku.set(r.sku, r); });
+
+                      // Combine all SKUs we have allocation data for, even if they aren't in
+                      // the current Step 4 view — that way nothing loaded is hidden from QA.
+                      const allSkus = new Set([
+                        ...Object.keys(idealAllocation),
+                        ...Object.keys(reservedUnits),
+                      ]);
+                      filteredData.forEach(r => { if (r.sku) allSkus.add(r.sku); });
+
+                      const rows = [...allSkus].sort().map(sku => {
+                        const r = bySku.get(sku) || {};
+                        const ideal = idealAllocation[sku];
+                        const reserved = reservedUnits[sku];
+                        const action = data.skuActions?.[sku] || (r.defaultAction || 'Keep');
+                        return {
+                          'SKU': sku,
+                          'Style Description': r.styleDescription || '',
+                          'Color Description': r.colorDescription || '',
+                          'Division': r.department || '',
+                          'Category': r.category || '',
+                          'Subcategory': r.subcategory || '',
+                          'Store Tier': r.storeTier || '',
+                          'Delivery': r.deliveryMonth || '',
+                          'Action': action,
+                          'Ideal Allocation': ideal != null ? ideal : '',
+                          'Reserved Units': reserved != null ? reserved : '',
+                          'Variance (Reserved − Ideal)': (ideal != null && reserved != null) ? (reserved - ideal) : '',
+                          'In Allocation File?': (ideal != null || reserved != null) ? 'Yes' : 'No',
+                          'In Assortment?': bySku.has(sku) ? 'Yes' : 'No',
+                        };
+                      });
+                      const ws = XLSX.utils.json_to_sheet(rows);
+                      ws['!cols'] = [
+                        { wch: 22 }, { wch: 32 }, { wch: 22 }, { wch: 14 }, { wch: 18 },
+                        { wch: 20 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 16 },
+                        { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 14 },
+                      ];
+                      const wb = XLSX.utils.book_new();
+                      XLSX.utils.book_append_sheet(wb, ws, 'Allocation Data');
+                      const storeName = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9]/g, '_');
+                      const ts = new Date().toISOString().slice(0, 10);
+                      XLSX.writeFile(wb, storeName + '_Allocation_Loaded_' + ts + '.xlsx');
+                    }}
+                    className="px-4 py-2 bg-white border border-green-600 text-green-700 rounded text-xs font-semibold hover:bg-green-50"
+                  >
+                    Export Loaded Data
+                  </button>
+                )}
                 <button
                   onClick={() => fileRef.current?.click()}
                   className={`px-4 py-2 rounded text-xs font-semibold ${dataLoaded ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
