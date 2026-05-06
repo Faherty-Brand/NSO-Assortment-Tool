@@ -2259,14 +2259,24 @@
       const baseData = useMemo(() => {
         const selectedDeliveries = data.selectedDeliveries || [];
         const selectedGroups = data.selectedGroups || [];
+        // Normalize tier/group strings for tolerant matching: lowercase, collapse
+        // whitespace, normalize "+" symbol variations, drop non-alphanumeric padding.
+        const normalizeTier = (s) => String(s || '')
+          .toLowerCase()
+          .replace(/\u00A0/g, ' ')          // non-breaking space → space
+          .replace(/\s+/g, ' ')             // collapse whitespace
+          .replace(/\s*\+\s*/g, '+')        // remove spaces around +
+          .trim();
+        const selectedGroupsNorm = new Set(selectedGroups.map(normalizeTier));
         const matched = (data.pstData || []).filter(row => {
           const dm = String(row.deliveryMonth || '').trim();
           const matchesDelivery = selectedDeliveries.length === 0 ||
             selectedDeliveries.includes(`${String(row.seasonCode||'').trim()}:${dm}`) ||
             selectedDeliveries.includes(dm);
+          const tierNorm = normalizeTier(row.storeTier);
           const matchesTier = selectedGroups.length === 0 ||
-            selectedGroups.includes(row.storeTier) ||
-            row.storeTier === 'ALL STORES';
+            selectedGroupsNorm.has(tierNorm) ||
+            tierNorm === 'all stores';
           return matchesDelivery && matchesTier;
         });
         // Deduplicate by SKU — merge delivery months in calendar order
@@ -3199,14 +3209,23 @@
         const selectedGroups = data.selectedGroups || [];
         const addedSkus = data.addedSkus || [];
 
+        const normalizeTier = (s) => String(s || '')
+          .toLowerCase()
+          .replace(/\u00A0/g, ' ')
+          .replace(/\s+/g, ' ')
+          .replace(/\s*\+\s*/g, '+')
+          .trim();
+        const selectedGroupsNorm = new Set(selectedGroups.map(normalizeTier));
+
         const matched = (data.pstData || []).filter(row => {
           const dm = String(row.deliveryMonth || '').trim();
           const matchesDelivery = selectedDeliveries.length === 0 ||
             selectedDeliveries.includes(`${String(row.seasonCode||'').trim()}:${dm}`) ||
             selectedDeliveries.includes(dm);
+          const tierNorm = normalizeTier(row.storeTier);
           const matchesTier = selectedGroups.length === 0 ||
-            selectedGroups.includes(row.storeTier) ||
-            row.storeTier === 'ALL STORES';
+            selectedGroupsNorm.has(tierNorm) ||
+            tierNorm === 'all stores';
           return matchesDelivery && matchesTier;
         });
 
