@@ -5218,7 +5218,7 @@
                 </div>
               </div>
             )}
-            <div className="max-w-6xl mx-auto">
+            <div className={`mx-auto ${currentStep === 4 || currentStep === 5 ? 'max-w-screen-2xl' : 'max-w-6xl'}`}>
               {currentStep === 1 && <Step1 onNext={handleNextWithSave} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 2 && <Step2 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 3 && <Step3 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
