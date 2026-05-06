@@ -1319,21 +1319,29 @@
 
     const Step2 = ({ onNext, onPrev, onDataChange, data }) => {
       const fileInputRef = useRef(null);
+      const [uploadError, setUploadError] = useState('');
 
       const handleFileUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        setUploadError('');
 
         const reader = new FileReader();
         reader.onload = (event) => {
           try {
             const parsed = parseStoreTieringTool(new Uint8Array(event.target.result));
+            if (!parsed.allStores.length && !parsed.storeGroups.length) {
+              setUploadError('File parsed but no store or group data was found. The file format may have changed — please share with admin.');
+              return;
+            }
 
             // Auto-populate selectedGroups from Store Matrix
             // Priority: New Store first → if not found, fall back to Sim Store
+            // Use optional chaining so the upload works even if Step 1 wasn't filled out
+            // (common for Special Projects / remodels of an existing store).
             let autoGroups = [];
-            const simStoreName = (data.simStore || '').trim();
-            const newStoreName = (data.proFormaData.newStoreName || '').trim();
+            const simStoreName = (data.simStore || data.proFormaData?.simStore || '').trim();
+            const newStoreName = (data.proFormaData?.newStoreName || data.storeName || '').trim();
 
             const matrixKeys = Object.keys(parsed.storeMatrix);
             const findStore = (name) => {
@@ -1425,7 +1433,8 @@
               step2Complete: true,
             });
           } catch (error) {
-            alert('Error parsing Store Tiering Tool: ' + error.message);
+            console.error('Store Tiering Tool parse error:', error);
+            setUploadError('Could not parse the file: ' + (error.message || error) + '. Try re-uploading or contact admin if the file format changed.');
           }
         };
         reader.readAsArrayBuffer(file);
@@ -1499,6 +1508,11 @@
               <div className="text-lg font-semibold text-gray-700">Upload Store Tiering Tool (.xlsx)</div>
               <p className="text-sm text-gray-500 mt-2">Click or drag Store Tiering Tool file</p>
             </div>
+            {uploadError && (
+              <div className="mt-3 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded">
+                <strong>Upload failed.</strong> {uploadError}
+              </div>
+            )}
           </div>
 
           {/* Tier Assignments — New Store vs Comp Stores */}
