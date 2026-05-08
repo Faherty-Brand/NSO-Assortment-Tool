@@ -811,6 +811,68 @@
       return result;
     };
 
+    // Cross-origin bridge to the Store Matrix Apps Script.
+    // The deployment is locked to "Anyone within Faherty", which blocks plain
+    // fetch() with CORS. To preserve that auth boundary, we mount a hidden
+    // iframe pointing to ?bridge=1, which loads inside script.googleusercontent.com.
+    // The bridge runs google.script.run server-side (same-origin, no CORS) and
+    // postMessages the result back to us. Auth check happens at iframe load:
+    // a non-Faherty user gets a Google sign-in page in the iframe, never reaches
+    // the bridge code, and the request times out.
+    const fetchViaBridge = (quarter, year, timeoutMs) => {
+      timeoutMs = timeoutMs || 30000;
+      return new Promise((resolve, reject) => {
+        const iframe = document.createElement('iframe');
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.setAttribute('title', 'Store Matrix bridge');
+        iframe.style.display = 'none';
+        iframe.src = STORE_MATRIX_API_URL + '?bridge=1';
+
+        const requestId = 'sync-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        let settled = false;
+        let timer = null;
+
+        const cleanup = () => {
+          window.removeEventListener('message', onMessage);
+          if (timer) clearTimeout(timer);
+          if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+        };
+        const finish = (fn, val) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fn(val);
+        };
+
+        const onMessage = (event) => {
+          // Apps Script HTML output lives at script.googleusercontent.com after redirect.
+          if (!event.origin.includes('googleusercontent.com')
+            && !event.origin.includes('script.google.com')) return;
+          const msg = event.data || {};
+          if (msg.type === 'matrix-bridge-ready') {
+            try {
+              iframe.contentWindow.postMessage(
+                { type: 'matrix-sync-request', quarter: quarter, year: year, requestId: requestId },
+                event.origin
+              );
+            } catch (err) {
+              finish(reject, new Error('Could not message bridge: ' + (err.message || err)));
+            }
+          } else if (msg.type === 'matrix-sync-response' && msg.requestId === requestId) {
+            finish(resolve, msg.data);
+          } else if (msg.type === 'matrix-sync-error' && msg.requestId === requestId) {
+            finish(reject, new Error(msg.error || 'Bridge error'));
+          }
+        };
+
+        window.addEventListener('message', onMessage);
+        timer = setTimeout(() => {
+          finish(reject, new Error("Sync timed out — make sure you're signed into your Faherty Google account in this browser."));
+        }, timeoutMs);
+        document.body.appendChild(iframe);
+      });
+    };
+
     const parsePST = (fileData) => {
       try {
         const workbook = XLSX.read(fileData, { type: 'array' });
@@ -1662,14 +1724,8 @@
             return;
           }
 
-          const url = STORE_MATRIX_API_URL +
-            '?quarter=' + encodeURIComponent(useQ) +
-            '&year=' + encodeURIComponent(useY) +
-            '&stores=with_tiers';
-          const res = await fetch(url, { redirect: 'follow' });
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          const json = await res.json();
-          if (json.error) throw new Error(json.error);
+          const json = await fetchViaBridge(useQ, useY);
+          if (!json || json.error) throw new Error((json && json.error) || 'Empty bridge response');
           if (!Array.isArray(json.stores) || json.stores.length === 0) {
             throw new Error('No stores returned for ' + useQ + ' ' + useY + '.');
           }
@@ -1700,17 +1756,11 @@
           applyStoreTieringData(c.data);
           setLastSyncedAt(c.syncedAt);
         } else {
-          // Cache stale → re-fetch using cached quarter/year.
+          // Cache stale → re-fetch via bridge using cached quarter/year.
           (async () => {
             try {
-              const url = STORE_MATRIX_API_URL +
-                '?quarter=' + encodeURIComponent(c.quarter) +
-                '&year=' + encodeURIComponent(c.year) +
-                '&stores=with_tiers';
-              const res = await fetch(url, { redirect: 'follow' });
-              if (!res.ok) return;
-              const json = await res.json();
-              if (json.error || !Array.isArray(json.stores) || json.stores.length === 0) return;
+              const json = await fetchViaBridge(c.quarter, c.year);
+              if (!json || json.error || !Array.isArray(json.stores) || json.stores.length === 0) return;
               const transformed = transformMatrixApiResponse(json);
               writeMatrixCache(transformed, c.quarter, c.year);
               setLastSyncedAt(Date.now());
