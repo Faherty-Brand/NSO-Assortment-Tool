@@ -790,6 +790,11 @@
       if (!apiData || !Array.isArray(apiData.stores)) return result;
 
       result.storeGroups = Array.isArray(apiData.groups) ? apiData.groups : [];
+      // Category metadata for the grouped checkbox UI in Step 2.
+      // Only present when synced from the API (xlsx upload doesn't carry it).
+      result.groupCategories = (apiData.groupCategories && typeof apiData.groupCategories === 'object')
+        ? apiData.groupCategories : {};
+      result.categoryOrder = Array.isArray(apiData.categoryOrder) ? apiData.categoryOrder : [];
 
       apiData.stores.forEach(s => {
         const storeName = String(s.name || '').trim();
@@ -850,13 +855,16 @@
         };
 
         const onMessage = (event) => {
-          // Apps Script HTML output lives at script.googleusercontent.com after redirect.
-          if (!event.origin.includes('googleusercontent.com')
-            && !event.origin.includes('script.google.com')) return;
+          // Don't filter by origin — Apps Script's inner sandboxed iframe may
+          // report origin as 'null' or as a googleusercontent subdomain we
+          // didn't anticipate. The requestId is a fresh per-request random
+          // token only the bridge we just spawned could know, so it's the
+          // real security check.
           const msg = event.data || {};
-          if (msg.type === 'matrix-sync-response' && msg.requestId === requestId) {
+          if (!msg || msg.requestId !== requestId) return;
+          if (msg.type === 'matrix-sync-response') {
             finish(resolve, msg.data);
-          } else if (msg.type === 'matrix-sync-error' && msg.requestId === requestId) {
+          } else if (msg.type === 'matrix-sync-error') {
             finish(reject, new Error(msg.error || 'Bridge error'));
           }
         };
@@ -1580,6 +1588,7 @@
       const [syncYear, setSyncYear] = useState(initialY);
       const [syncing, setSyncing] = useState(false);
       const [syncError, setSyncError] = useState('');
+      const [syncSuccess, setSyncSuccess] = useState('');
       const [lastSyncedAt, setLastSyncedAt] = useState(cachedOnMount ? cachedOnMount.syncedAt : null);
       // Force re-renders of the "synced X min ago" label without polling work elsewhere.
       const [, setNowTick] = useState(0);
@@ -1705,10 +1714,18 @@
         reader.readAsArrayBuffer(file);
       };
 
+      const flashSyncSuccess = (storeCount, q, y, fromCache) => {
+        const label = fromCache ? 'Loaded from cache' : 'Synced';
+        setSyncSuccess('✓ ' + label + ': ' + storeCount + ' store' + (storeCount === 1 ? '' : 's') + ' from ' + q + ' ' + y);
+        // Auto-clear after 5 seconds so the banner doesn't linger forever.
+        setTimeout(() => setSyncSuccess(''), 5000);
+      };
+
       const handleSyncFromMatrix = async ({ force = false } = {}) => {
         const useQ = syncQuarter;
         const useY = syncYear;
         setSyncError('');
+        setSyncSuccess('');
         setSyncing(true);
         try {
           // Cache hit: same quarter/year and < 1h old → apply without network.
@@ -1717,6 +1734,7 @@
               (Date.now() - c.syncedAt) < MATRIX_CACHE_TTL_MS) {
             applyStoreTieringData(c.data);
             setLastSyncedAt(c.syncedAt);
+            flashSyncSuccess((c.data.allStores || []).length, useQ, useY, true);
             return;
           }
 
@@ -1730,6 +1748,7 @@
           writeMatrixCache(transformed, useQ, useY);
           setLastSyncedAt(Date.now());
           applyStoreTieringData(transformed);
+          flashSyncSuccess(json.stores.length, useQ, useY, false);
         } catch (err) {
           console.error('Store Matrix sync error:', err);
           setSyncError('Sync failed: ' + (err.message || err) + '. Try again, or use the upload below.');
@@ -1818,6 +1837,35 @@
         return matrixGroups.length > 0 ? matrixGroups : defaultGroups;
       }, [data.storeTieringData.storeGroups]);
 
+      // Bucket the visible groups by category, ordered by fsl-catorder.
+      // Only used when the data came from the bridge sync (xlsx upload doesn't
+      // carry category metadata). Returns null to fall back to the flat grid.
+      const groupsByCategory = useMemo(() => {
+        const cats = data.storeTieringData.groupCategories || {};
+        if (Object.keys(cats).length === 0) return null;
+
+        const order = data.storeTieringData.categoryOrder || [];
+        const buckets = {};
+        availableGroups.forEach(g => {
+          const cat = cats[g] || 'Uncategorized';
+          if (!buckets[cat]) buckets[cat] = [];
+          buckets[cat].push(g);
+        });
+
+        const ordered = [];
+        order.forEach(cat => {
+          if (buckets[cat] && buckets[cat].length) {
+            ordered.push([cat, buckets[cat]]);
+          }
+        });
+        // Append any categories not in catorder (alphabetical, stable).
+        Object.keys(buckets)
+          .filter(k => order.indexOf(k) === -1)
+          .sort()
+          .forEach(cat => ordered.push([cat, buckets[cat]]));
+        return ordered;
+      }, [availableGroups, data.storeTieringData.groupCategories, data.storeTieringData.categoryOrder]);
+
       return (
         <div className="space-y-8">
           <h2 className="text-2xl font-bold text-gray-800">Step 2: Store Tiering & Groups</h2>
@@ -1874,6 +1922,11 @@
                 </button>
               )}
             </div>
+            {syncSuccess && (
+              <div className="mt-3 bg-green-50 border border-green-300 text-green-800 text-xs font-semibold px-3 py-2 rounded flex items-center gap-2">
+                <span>{syncSuccess}</span>
+              </div>
+            )}
             {syncError && (
               <div className="mt-3 bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 rounded">
                 {syncError}
@@ -2039,19 +2092,45 @@
                 No Store Matrix sheet found — showing default groups. Add a "Store Matrix" tab to your Store Tiering Tool to auto-populate.
               </p>
             )}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {availableGroups.map((group, idx) => (
-                <label key={idx} className="flex items-center space-x-3 cursor-pointer p-2 rounded hover:bg-gray-50">
-                  <input
-                    type="checkbox"
-                    checked={(data.selectedGroups || []).includes(group)}
-                    onChange={() => handleGroupToggle(group)}
-                    className="w-4 h-4 text-blue-600 border-gray-300 rounded cursor-pointer"
-                  />
-                  <span className="text-sm text-gray-700">{group}</span>
-                </label>
-              ))}
-            </div>
+            {groupsByCategory ? (
+              <div className="space-y-5">
+                {groupsByCategory.map(([cat, groups]) => (
+                  <div key={cat}>
+                    <h4 className="text-xs font-bold text-gray-800 uppercase tracking-wider mb-2 pb-1 border-b border-gray-200">
+                      {cat}
+                      <span className="text-gray-400 font-normal normal-case ml-2">({groups.length})</span>
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {groups.map(group => (
+                        <label key={group} className="flex items-center space-x-3 cursor-pointer p-2 rounded hover:bg-gray-50">
+                          <input
+                            type="checkbox"
+                            checked={(data.selectedGroups || []).includes(group)}
+                            onChange={() => handleGroupToggle(group)}
+                            className="w-4 h-4 text-blue-600 border-gray-300 rounded cursor-pointer"
+                          />
+                          <span className="text-sm text-gray-700">{group}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {availableGroups.map((group, idx) => (
+                  <label key={idx} className="flex items-center space-x-3 cursor-pointer p-2 rounded hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={(data.selectedGroups || []).includes(group)}
+                      onChange={() => handleGroupToggle(group)}
+                      className="w-4 h-4 text-blue-600 border-gray-300 rounded cursor-pointer"
+                    />
+                    <span className="text-sm text-gray-700">{group}</span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex justify-between pt-8 border-t border-gray-200">
@@ -4404,7 +4483,7 @@
 
     // Store Matrix API (Apps Script) — feeds the "Sync from Store Matrix" button in Step 2.
     const STORE_MATRIX_API_URL = 'https://script.google.com/a/macros/fahertybrand.com/s/AKfycby8Z67jCeRScKJRxQHJfxd_Hnzw6USsNbTnu0pA9xd5xAEVMV0fIorwaZe0AoCJa0PB/exec';
-    const MATRIX_CACHE_KEY = 'faherty_nso_matrix_cache_v1';
+    const MATRIX_CACHE_KEY = 'faherty_nso_matrix_cache_v2';
     const MATRIX_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
     // ============================================
