@@ -772,6 +772,45 @@
       }
     };
 
+    // Transform the Store Matrix API response (?stores=with_tiers) into the same
+    // storeTieringData shape that parseStoreTieringTool produces from the xlsx.
+    // Store Matrix doesn't track Kids or Non Apparel tiers, so those arrays stay empty
+    // (matches the new "Store Grid" xlsx behavior — see line ~610).
+    const transformMatrixApiResponse = (apiData) => {
+      const result = {
+        allStores: [],
+        mensData: [],
+        womensData: [],
+        nonApparel: [],
+        kidsData: [],
+        storeGroups: [],
+        storeMatrix: {},
+        totalRollup: [],
+      };
+      if (!apiData || !Array.isArray(apiData.stores)) return result;
+
+      result.storeGroups = Array.isArray(apiData.groups) ? apiData.groups : [];
+
+      apiData.stores.forEach(s => {
+        const storeName = String(s.name || '').trim();
+        if (!storeName) return;
+        result.allStores.push(storeName);
+        result.storeMatrix[storeName] = Array.isArray(s.groups) ? s.groups : [];
+
+        const baseRow = {
+          'Store': storeName,
+          'Region': '',          // Store Matrix doesn't carry region/area
+          'Area': '',
+          'Vibe': s.vibe || '',
+        };
+        const t = s.tiers || {};
+        if (t.mens)   result.mensData.push({ ...baseRow, 'Proposed Tier': t.mens });
+        if (t.womens) result.womensData.push({ ...baseRow, 'Proposed Tier': t.womens });
+      });
+
+      return result;
+    };
+
     const parsePST = (fileData) => {
       try {
         const workbook = XLSX.read(fileData, { type: 'array' });
@@ -1439,6 +1478,153 @@
       const fileInputRef = useRef(null);
       const [uploadError, setUploadError] = useState('');
 
+      // ── Store Matrix sync (Sync from Store Matrix button) ────────────────
+      const getCurrentQuarter = () => {
+        const now = new Date();
+        const m = now.getMonth();
+        const q = m < 3 ? 'Q1' : m < 6 ? 'Q2' : m < 9 ? 'Q3' : 'Q4';
+        return { quarter: q, year: now.getFullYear() };
+      };
+
+      const readMatrixCache = () => {
+        try {
+          const raw = localStorage.getItem(MATRIX_CACHE_KEY);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed && parsed.data ? parsed : null;
+        } catch (err) { return null; }
+      };
+
+      const writeMatrixCache = (transformed, quarter, year) => {
+        try {
+          localStorage.setItem(MATRIX_CACHE_KEY, JSON.stringify({
+            data: transformed, quarter, year, syncedAt: Date.now(),
+          }));
+        } catch (err) { /* quota or private mode — non-fatal */ }
+      };
+
+      const formatAgo = (ts) => {
+        if (!ts) return 'Not synced yet';
+        const diff = Date.now() - ts;
+        const mins = Math.floor(diff / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return mins + ' min ago';
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24) return hrs + 'h ago';
+        return new Date(ts).toLocaleDateString();
+      };
+
+      const cachedOnMount = readMatrixCache();
+      const initialQ = cachedOnMount ? cachedOnMount.quarter : getCurrentQuarter().quarter;
+      const initialY = cachedOnMount ? cachedOnMount.year : getCurrentQuarter().year;
+
+      const [syncQuarter, setSyncQuarter] = useState(initialQ);
+      const [syncYear, setSyncYear] = useState(initialY);
+      const [syncing, setSyncing] = useState(false);
+      const [syncError, setSyncError] = useState('');
+      const [lastSyncedAt, setLastSyncedAt] = useState(cachedOnMount ? cachedOnMount.syncedAt : null);
+      // Force re-renders of the "synced X min ago" label without polling work elsewhere.
+      const [, setNowTick] = useState(0);
+      useEffect(() => {
+        const id = setInterval(() => setNowTick(t => t + 1), 60000);
+        return () => clearInterval(id);
+      }, []);
+
+      // Apply parsed/transformed storeTieringData to app state.
+      // Shared by both upload and sync paths so they behave identically downstream
+      // (auto-populate selectedGroups from the store matrix, compute assignedTiers).
+      const applyStoreTieringData = (parsed) => {
+        let autoGroups = [];
+        const simStoreName = (data.simStore || data.proFormaData?.simStore || '').trim();
+        const newStoreName = (data.proFormaData?.newStoreName || data.storeName || '').trim();
+
+        const matrixKeys = Object.keys(parsed.storeMatrix);
+        const findStore = (name) => {
+          if (!name) return null;
+          const lower = name.toLowerCase();
+          return matrixKeys.find(k =>
+            k.toLowerCase() === lower ||
+            lower.includes(k.toLowerCase()) ||
+            k.toLowerCase().includes(lower.split('(')[0].trim().toLowerCase())
+          );
+        };
+
+        let matchedStore = findStore(newStoreName);
+        let matchSource = 'new store (' + newStoreName + ')';
+        if (!matchedStore && simStoreName) {
+          matchedStore = findStore(simStoreName);
+          matchSource = 'Sim Store fallback (' + simStoreName + ')';
+        }
+        if (matchedStore) {
+          autoGroups = parsed.storeMatrix[matchedStore] || [];
+        }
+
+        const getStoreName = (r) => {
+          for (const k of Object.keys(r)) {
+            if (k.toLowerCase().includes('store') || k.toLowerCase().includes('location')) {
+              return String(r[k] || '').trim().toLowerCase();
+            }
+          }
+          return String(Object.values(r)[0] || '').trim().toLowerCase();
+        };
+
+        const getTier = (match) => {
+          if (!match) return '';
+          for (const k of Object.keys(match)) {
+            if (k.toLowerCase().includes('override') && k.toLowerCase().includes('tier')) {
+              const v = String(match[k] || '').trim();
+              if (v) return v;
+            }
+          }
+          for (const k of Object.keys(match)) {
+            if (k.toLowerCase().includes('proposed') && k.toLowerCase().includes('tier')) {
+              const v = String(match[k] || '').trim();
+              if (v) return v;
+            }
+          }
+          return '';
+        };
+
+        const findTierForStore = (name, divData) => {
+          if (!name || !Array.isArray(divData) || divData.length === 0) return '';
+          const lower = name.toLowerCase();
+          const match = divData.find(r => {
+            const s = getStoreName(r);
+            return s === lower || s.includes(lower) || lower.includes(s);
+          });
+          return getTier(match);
+        };
+
+        const getTierWithFallback = (divData) => {
+          const fromNew = findTierForStore(newStoreName, divData);
+          if (fromNew) return fromNew;
+          return findTierForStore(simStoreName, divData);
+        };
+
+        const formatForDropdown = (v) => {
+          if (!v) return '';
+          const s = String(v).trim();
+          if (!s) return '';
+          if (/^tier\b/i.test(s)) return s;
+          if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
+          return s;
+        };
+
+        onDataChange({
+          ...data,
+          storeTieringData: parsed,
+          selectedGroups: autoGroups.length > 0 ? autoGroups : (data.selectedGroups || []),
+          storeMatrixMatch: matchedStore ? { store: matchedStore, source: matchSource } : null,
+          assignedTiers: {
+            mens: formatForDropdown(getTierWithFallback(parsed.mensData)),
+            womens: formatForDropdown(getTierWithFallback(parsed.womensData)),
+            nonApparel: formatForDropdown(getTierWithFallback(parsed.nonApparel)),
+            kids: formatForDropdown(getTierWithFallback(parsed.kidsData)),
+          },
+          step2Complete: true,
+        });
+      };
+
       const handleFileUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -1452,116 +1638,7 @@
               setUploadError('File parsed but no store or group data was found. The file format may have changed — please share with admin.');
               return;
             }
-
-            // Auto-populate selectedGroups from Store Matrix
-            // Priority: New Store first → if not found, fall back to Sim Store
-            // Use optional chaining so the upload works even if Step 1 wasn't filled out
-            // (common for Special Projects / remodels of an existing store).
-            let autoGroups = [];
-            const simStoreName = (data.simStore || data.proFormaData?.simStore || '').trim();
-            const newStoreName = (data.proFormaData?.newStoreName || data.storeName || '').trim();
-
-            const matrixKeys = Object.keys(parsed.storeMatrix);
-            const findStore = (name) => {
-              if (!name) return null;
-              const lower = name.toLowerCase();
-              return matrixKeys.find(k =>
-                k.toLowerCase() === lower ||
-                lower.includes(k.toLowerCase()) ||
-                k.toLowerCase().includes(lower.split('(')[0].trim().toLowerCase())
-              );
-            };
-
-            // Try new store first — if it's already in the matrix, use its groups
-            let matchedStore = findStore(newStoreName);
-            let matchSource = 'new store (' + newStoreName + ')';
-
-            // If new store isn't in the matrix, fall back to Sim Store
-            if (!matchedStore && simStoreName) {
-              matchedStore = findStore(simStoreName);
-              matchSource = 'Sim Store fallback (' + simStoreName + ')';
-            }
-
-            if (matchedStore) {
-              autoGroups = parsed.storeMatrix[matchedStore] || [];
-            }
-
-            onDataChange({
-              ...data,
-              storeTieringData: parsed,
-              selectedGroups: autoGroups.length > 0 ? autoGroups : (data.selectedGroups || []),
-              storeMatrixMatch: matchedStore ? { store: matchedStore, source: matchSource } : null,
-              assignedTiers: (() => {
-                // Helper: get store name from a tiering row (handles different header names)
-                const getStoreName = (r) => {
-                  for (const k of Object.keys(r)) {
-                    if (k.toLowerCase().includes('store') || k.toLowerCase().includes('location')) {
-                      return String(r[k] || '').trim().toLowerCase();
-                    }
-                  }
-                  return String(Object.values(r)[0] || '').trim().toLowerCase();
-                };
-
-                // Helper: get effective tier from a tiering row (handles different header names)
-                const getTier = (match) => {
-                  if (!match) return '';
-                  for (const k of Object.keys(match)) {
-                    if (k.toLowerCase().includes('override') && k.toLowerCase().includes('tier')) {
-                      const v = String(match[k] || '').trim();
-                      if (v) return v;
-                    }
-                  }
-                  for (const k of Object.keys(match)) {
-                    if (k.toLowerCase().includes('proposed') && k.toLowerCase().includes('tier')) {
-                      const v = String(match[k] || '').trim();
-                      if (v) return v;
-                    }
-                  }
-                  return '';
-                };
-
-                // Helper: find a store in division data and return its tier
-                const findTierForStore = (name, divData) => {
-                  if (!name || !Array.isArray(divData) || divData.length === 0) return '';
-                  const lower = name.toLowerCase();
-                  const match = divData.find(r => {
-                    const s = getStoreName(r);
-                    return s === lower || s.includes(lower) || lower.includes(s);
-                  });
-                  return getTier(match);
-                };
-
-                // Priority: try new store name first, fall back to sim store
-                const newName = newStoreName;
-                const simName = simStoreName;
-
-                const getTierWithFallback = (divData) => {
-                  const fromNew = findTierForStore(newName, divData);
-                  if (fromNew) return fromNew;
-                  return findTierForStore(simName, divData);
-                };
-
-                // Format raw tier values (e.g. "2", "3+") as "Tier 2", "Tier 3+"
-                // so they match the dropdown <option value> format. Pass through
-                // already-formatted values and non-numeric labels unchanged.
-                const formatForDropdown = (v) => {
-                  if (!v) return '';
-                  const s = String(v).trim();
-                  if (!s) return '';
-                  if (/^tier\b/i.test(s)) return s;
-                  if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
-                  return s;
-                };
-
-                return {
-                  mens: formatForDropdown(getTierWithFallback(parsed.mensData)),
-                  womens: formatForDropdown(getTierWithFallback(parsed.womensData)),
-                  nonApparel: formatForDropdown(getTierWithFallback(parsed.nonApparel)),
-                  kids: formatForDropdown(getTierWithFallback(parsed.kidsData)),
-                };
-              })(),
-              step2Complete: true,
-            });
+            applyStoreTieringData(parsed);
           } catch (error) {
             console.error('Store Tiering Tool parse error:', error);
             setUploadError('Could not parse the file: ' + (error.message || error) + '. Try re-uploading or contact admin if the file format changed.');
@@ -1569,6 +1646,80 @@
         };
         reader.readAsArrayBuffer(file);
       };
+
+      const handleSyncFromMatrix = async ({ force = false } = {}) => {
+        const useQ = syncQuarter;
+        const useY = syncYear;
+        setSyncError('');
+        setSyncing(true);
+        try {
+          // Cache hit: same quarter/year and < 1h old → apply without network.
+          const c = readMatrixCache();
+          if (!force && c && c.quarter === useQ && c.year === useY &&
+              (Date.now() - c.syncedAt) < MATRIX_CACHE_TTL_MS) {
+            applyStoreTieringData(c.data);
+            setLastSyncedAt(c.syncedAt);
+            return;
+          }
+
+          const url = STORE_MATRIX_API_URL +
+            '?quarter=' + encodeURIComponent(useQ) +
+            '&year=' + encodeURIComponent(useY) +
+            '&stores=with_tiers';
+          const res = await fetch(url, { redirect: 'follow' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const json = await res.json();
+          if (json.error) throw new Error(json.error);
+          if (!Array.isArray(json.stores) || json.stores.length === 0) {
+            throw new Error('No stores returned for ' + useQ + ' ' + useY + '.');
+          }
+
+          const transformed = transformMatrixApiResponse(json);
+          writeMatrixCache(transformed, useQ, useY);
+          setLastSyncedAt(Date.now());
+          applyStoreTieringData(transformed);
+        } catch (err) {
+          console.error('Store Matrix sync error:', err);
+          setSyncError('Sync failed: ' + (err.message || err) + '. Try again, or use the upload below.');
+        } finally {
+          setSyncing(false);
+        }
+      };
+
+      // On Step 2 mount: hydrate from cache if fresh, or auto-resync silently if stale.
+      // Skip if the project already has tiering data (don't clobber an in-progress edit).
+      useEffect(() => {
+        const haveData = (data.storeTieringData?.allStores?.length || 0) > 0
+                      || (data.storeTieringData?.storeGroups?.length || 0) > 0;
+        if (haveData) return;
+
+        const c = readMatrixCache();
+        if (!c) return; // no cache, no quarter chosen — wait for user to click Sync.
+
+        if ((Date.now() - c.syncedAt) < MATRIX_CACHE_TTL_MS) {
+          applyStoreTieringData(c.data);
+          setLastSyncedAt(c.syncedAt);
+        } else {
+          // Cache stale → re-fetch using cached quarter/year.
+          (async () => {
+            try {
+              const url = STORE_MATRIX_API_URL +
+                '?quarter=' + encodeURIComponent(c.quarter) +
+                '&year=' + encodeURIComponent(c.year) +
+                '&stores=with_tiers';
+              const res = await fetch(url, { redirect: 'follow' });
+              if (!res.ok) return;
+              const json = await res.json();
+              if (json.error || !Array.isArray(json.stores) || json.stores.length === 0) return;
+              const transformed = transformMatrixApiResponse(json);
+              writeMatrixCache(transformed, c.quarter, c.year);
+              setLastSyncedAt(Date.now());
+              applyStoreTieringData(transformed);
+            } catch (err) { /* silent; user can click Sync manually */ }
+          })();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
 
       const handleGroupToggle = (group) => {
         const currentGroups = data.selectedGroups || [];
@@ -1624,6 +1775,67 @@
       return (
         <div className="space-y-8">
           <h2 className="text-2xl font-bold text-gray-800">Step 2: Store Tiering & Groups</h2>
+
+          {/* Sync from Store Matrix — primary path. Upload below is a fallback. */}
+          <div className="mb-4 bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div className="text-base font-semibold text-gray-800">Sync from Store Matrix</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  Pulls live tier &amp; group assignments straight from the Store Matrix for the selected quarter.
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={syncQuarter}
+                  onChange={e => setSyncQuarter(e.target.value)}
+                  disabled={syncing}
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm bg-white"
+                >
+                  {['Q1','Q2','Q3','Q4'].map(q => <option key={q} value={q}>{q}</option>)}
+                </select>
+                <select
+                  value={syncYear}
+                  onChange={e => setSyncYear(parseInt(e.target.value, 10))}
+                  disabled={syncing}
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm bg-white"
+                >
+                  {(() => {
+                    // Auto-extending year window: previous year through current+2.
+                    // Rolls forward each calendar year so you never have to update the code.
+                    const cy = new Date().getFullYear();
+                    return [cy - 1, cy, cy + 1, cy + 2].map(y => <option key={y} value={y}>{y}</option>);
+                  })()}
+                </select>
+                <button
+                  onClick={() => handleSyncFromMatrix({ force: true })}
+                  disabled={syncing}
+                  className="bg-[#1C3554] hover:bg-[#162B44] disabled:opacity-50 text-white text-sm font-semibold px-4 py-1.5 rounded transition"
+                >
+                  {syncing ? 'Syncing…' : 'Sync from Store Matrix'}
+                </button>
+              </div>
+            </div>
+            <div className="mt-3 text-xs text-gray-500 flex items-center gap-3">
+              <span>Last sync: {formatAgo(lastSyncedAt)}</span>
+              {lastSyncedAt && (
+                <button
+                  onClick={() => handleSyncFromMatrix({ force: true })}
+                  disabled={syncing}
+                  className="text-[#1C3554] underline hover:no-underline disabled:opacity-50"
+                >
+                  Sync now
+                </button>
+              )}
+            </div>
+            {syncError && (
+              <div className="mt-3 bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 rounded">
+                {syncError}
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs uppercase tracking-wider text-gray-400 -my-2 text-center">— or upload manually —</div>
 
           <div className="mb-8">
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-gray-400 transition"
@@ -4143,6 +4355,11 @@
     const CACHE_KEY = 'faherty_nso_cache';
     const SESSION_KEY = 'faherty_nso_session';
     const ALLOWED_EMAIL_DOMAIN = 'fahertybrand.com';
+
+    // Store Matrix API (Apps Script) — feeds the "Sync from Store Matrix" button in Step 2.
+    const STORE_MATRIX_API_URL = 'https://script.google.com/a/macros/fahertybrand.com/s/AKfycby8Z67jCeRScKJRxQHJfxd_Hnzw6USsNbTnu0pA9xd5xAEVMV0fIorwaZe0AoCJa0PB/exec';
+    const MATRIX_CACHE_KEY = 'faherty_nso_matrix_cache_v1';
+    const MATRIX_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
     // ============================================
     // AUTH (Supabase magic link)
