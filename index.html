@@ -499,124 +499,6 @@
           totalRollup: [],
         };
 
-        // ============================================================
-        // FORMAT DETECTION
-        // The new "Store Grid" format is a single sheet with all data:
-        //   - Columns: Store Name | Region | Area | Vibe | # Groups | <group columns with X marks>
-        //   - Includes "Mens Tier 1/2/2+/3/3+/4/4+" and "Womens Tier 1/2/2+/..." columns
-        //   - No tier data for Non Apparel or Kids
-        // The old "Store Tiering Tool" format had separate sheets per division.
-        // ============================================================
-        const detectNewFormat = () => {
-          for (const sheetName of workbook.SheetNames) {
-            const sheet = workbook.Sheets[sheetName];
-            const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-            const firstRow = allRows[0];
-            if (!Array.isArray(firstRow)) continue;
-            const headerLower = firstRow.map(c => String(c || '').toLowerCase().trim());
-            const hasStoreName = headerLower.some(h => h === 'store name' || h === 'store');
-            const hasMensTier = headerLower.some(h => /^mens tier \d/.test(h));
-            const hasWomensTier = headerLower.some(h => /^womens tier \d/.test(h));
-            if (hasStoreName && (hasMensTier || hasWomensTier)) {
-              return sheetName;
-            }
-          }
-          return null;
-        };
-
-        const newFormatSheetName = detectNewFormat();
-
-        if (newFormatSheetName) {
-          const sheet = workbook.Sheets[newFormatSheetName];
-          const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-          if (rawData.length === 0) return result;
-
-          const headers = rawData[0].map(h => String(h || '').trim());
-          const headerLower = headers.map(h => h.toLowerCase());
-
-          const findCol = (predicate) => headerLower.findIndex(predicate);
-          const storeCol = findCol(h => h === 'store name' || h === 'store' || h === 'location' || h === 'location name');
-          const regionCol = findCol(h => h === 'region');
-          const areaCol = findCol(h => h === 'area');
-          const vibeCol = findCol(h => h === 'vibe');
-
-          // Mens & Womens tier columns: capture all (with or without "+"). Take the
-          // HIGHEST tier marked X — if a store has only "Mens Tier 4+" X'd, it's tier 4.
-          const mensTierCols = [];
-          const womensTierCols = [];
-          headers.forEach((h, i) => {
-            const lh = h.toLowerCase();
-            const mMatch = lh.match(/^mens tier (\d)\+?$/);
-            const wMatch = lh.match(/^womens tier (\d)\+?$/);
-            if (mMatch) mensTierCols.push({ tier: mMatch[1], col: i });
-            if (wMatch) womensTierCols.push({ tier: wMatch[1], col: i });
-          });
-          mensTierCols.sort((a, b) => Number(b.tier) - Number(a.tier));
-          womensTierCols.sort((a, b) => Number(b.tier) - Number(a.tier));
-
-          // Group columns = everything that isn't store metadata
-          const metadataCols = new Set([storeCol, regionCol, areaCol, vibeCol].filter(c => c >= 0));
-          headers.forEach((h, i) => {
-            const lh = h.toLowerCase();
-            if (lh === '# groups' || lh === 'groups' || lh === 'group count') metadataCols.add(i);
-          });
-
-          const groupNames = [];
-          const groupCols = [];
-          headers.forEach((h, i) => {
-            if (!h || metadataCols.has(i)) return;
-            groupNames.push(h);
-            groupCols.push(i);
-          });
-          result.storeGroups = groupNames;
-
-          const isX = (v) => v != null && String(v).trim().toUpperCase() === 'X';
-
-          for (let i = 1; i < rawData.length; i++) {
-            const row = rawData[i];
-            if (!Array.isArray(row)) continue;
-            const storeNameRaw = storeCol >= 0 ? row[storeCol] : row[0];
-            if (!storeNameRaw) continue;
-            const storeName = String(storeNameRaw).trim();
-            if (!storeName) continue;
-            const slow = storeName.toLowerCase();
-            if (slow === 'total' || slow.startsWith('total ') || slow.includes('median') || slow.includes('grand total')) continue;
-
-            result.allStores.push(storeName);
-
-            const groups = [];
-            groupCols.forEach((col, idx) => {
-              if (isX(row[col])) groups.push(groupNames[idx]);
-            });
-            result.storeMatrix[storeName] = groups;
-
-            let mensTier = '';
-            for (const t of mensTierCols) {
-              if (isX(row[t.col])) { mensTier = t.tier; break; }
-            }
-            let womensTier = '';
-            for (const t of womensTierCols) {
-              if (isX(row[t.col])) { womensTier = t.tier; break; }
-            }
-
-            const baseRow = {
-              'Store': storeName,
-              'Region': regionCol >= 0 ? (row[regionCol] || '') : '',
-              'Area': areaCol >= 0 ? (row[areaCol] || '') : '',
-              'Vibe': vibeCol >= 0 ? (row[vibeCol] || '') : '',
-            };
-            if (mensTier) result.mensData.push({ ...baseRow, 'Proposed Tier': mensTier });
-            if (womensTier) result.womensData.push({ ...baseRow, 'Proposed Tier': womensTier });
-            // Non Apparel & Kids tiers are blank in the new Store Grid format.
-          }
-
-          return result;
-        }
-
-        // ============================================================
-        // OLD FORMAT: fall through to multi-sheet legacy parser
-        // ============================================================
-
         // Parse Attributes Upload
         if (workbook.SheetNames.includes('Attributes Upload')) {
           const sheet = workbook.Sheets['Attributes Upload'];
@@ -772,111 +654,6 @@
       }
     };
 
-    // Transform the Store Matrix API response (?stores=with_tiers) into the same
-    // storeTieringData shape that parseStoreTieringTool produces from the xlsx.
-    // Store Matrix doesn't track Kids or Non Apparel tiers, so those arrays stay empty
-    // (matches the new "Store Grid" xlsx behavior — see line ~610).
-    const transformMatrixApiResponse = (apiData) => {
-      const result = {
-        allStores: [],
-        mensData: [],
-        womensData: [],
-        nonApparel: [],
-        kidsData: [],
-        storeGroups: [],
-        storeMatrix: {},
-        totalRollup: [],
-      };
-      if (!apiData || !Array.isArray(apiData.stores)) return result;
-
-      result.storeGroups = Array.isArray(apiData.groups) ? apiData.groups : [];
-      // Category metadata for the grouped checkbox UI in Step 2.
-      // Only present when synced from the API (xlsx upload doesn't carry it).
-      result.groupCategories = (apiData.groupCategories && typeof apiData.groupCategories === 'object')
-        ? apiData.groupCategories : {};
-      result.categoryOrder = Array.isArray(apiData.categoryOrder) ? apiData.categoryOrder : [];
-
-      apiData.stores.forEach(s => {
-        const storeName = String(s.name || '').trim();
-        if (!storeName) return;
-        result.allStores.push(storeName);
-        result.storeMatrix[storeName] = Array.isArray(s.groups) ? s.groups : [];
-
-        const baseRow = {
-          'Store': storeName,
-          'Region': '',          // Store Matrix doesn't carry region/area
-          'Area': '',
-          'Vibe': s.vibe || '',
-        };
-        const t = s.tiers || {};
-        if (t.mens)   result.mensData.push({ ...baseRow, 'Proposed Tier': t.mens });
-        if (t.womens) result.womensData.push({ ...baseRow, 'Proposed Tier': t.womens });
-      });
-
-      return result;
-    };
-
-    // Cross-origin bridge to the Store Matrix Apps Script.
-    // The deployment is locked to "Anyone within Faherty", which blocks plain
-    // fetch() with CORS. To preserve that auth boundary, we mount a hidden iframe
-    // pointing to ?bridge=1&quarter=...&year=...&requestId=... — Apps Script
-    // template-injects those params into Bridge.html, which auto-runs server-side
-    // and postMessages the result out. We don't try to postMessage IN — the IFRAME
-    // sandbox drops inbound messages — so the bridge URL itself carries everything.
-    // Auth check: iframe load requires Faherty Google sign-in; a non-Faherty user
-    // gets a login page, the bridge never runs, and the request times out.
-    const fetchViaBridge = (quarter, year, timeoutMs) => {
-      timeoutMs = timeoutMs || 30000;
-      return new Promise((resolve, reject) => {
-        const requestId = 'sync-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-        const iframe = document.createElement('iframe');
-        iframe.setAttribute('aria-hidden', 'true');
-        iframe.setAttribute('title', 'Store Matrix bridge');
-        iframe.style.display = 'none';
-        iframe.src = STORE_MATRIX_API_URL +
-          '?bridge=1' +
-          '&quarter=' + encodeURIComponent(quarter) +
-          '&year=' + encodeURIComponent(year) +
-          '&requestId=' + encodeURIComponent(requestId);
-
-        let settled = false;
-        let timer = null;
-
-        const cleanup = () => {
-          window.removeEventListener('message', onMessage);
-          if (timer) clearTimeout(timer);
-          if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
-        };
-        const finish = (fn, val) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          fn(val);
-        };
-
-        const onMessage = (event) => {
-          // Don't filter by origin — Apps Script's inner sandboxed iframe may
-          // report origin as 'null' or as a googleusercontent subdomain we
-          // didn't anticipate. The requestId is a fresh per-request random
-          // token only the bridge we just spawned could know, so it's the
-          // real security check.
-          const msg = event.data || {};
-          if (!msg || msg.requestId !== requestId) return;
-          if (msg.type === 'matrix-sync-response') {
-            finish(resolve, msg.data);
-          } else if (msg.type === 'matrix-sync-error') {
-            finish(reject, new Error(msg.error || 'Bridge error'));
-          }
-        };
-
-        window.addEventListener('message', onMessage);
-        timer = setTimeout(() => {
-          finish(reject, new Error("Sync timed out — make sure you're signed into your Faherty Google account in this browser."));
-        }, timeoutMs);
-        document.body.appendChild(iframe);
-      });
-    };
-
     const parsePST = (fileData) => {
       try {
         const workbook = XLSX.read(fileData, { type: 'array' });
@@ -980,43 +757,6 @@
       }
     };
 
-    // Sort & format a delivery-month string. Accepts either a comma-separated string
-    // ("August, June") or an array of months. Returns "June, August" with months in
-    // calendar order. Handles "may_1", "may_2" suffixes (sorted by their numeric tail
-    // within the same month). Unknown tokens fall to the end alphabetically.
-    const sortDeliveryMonths = (input) => {
-      if (!input) return '';
-      const monthOrder = {
-        january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
-        july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
-      };
-      const parts = (Array.isArray(input) ? input : String(input).split(','))
-        .map(s => String(s).trim())
-        .filter(Boolean);
-      const seen = new Set();
-      const unique = parts.filter(p => {
-        const key = p.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      unique.sort((a, b) => {
-        const al = a.toLowerCase();
-        const bl = b.toLowerCase();
-        const aBase = al.replace(/_\d+$/, '');
-        const bBase = bl.replace(/_\d+$/, '');
-        const aOrd = monthOrder[aBase] ?? 99;
-        const bOrd = monthOrder[bBase] ?? 99;
-        if (aOrd !== bOrd) return aOrd - bOrd;
-        // Same month — sort by trailing _N (treat absence as 0)
-        const aTail = parseInt((al.match(/_(\d+)$/) || [])[1] || '0', 10);
-        const bTail = parseInt((bl.match(/_(\d+)$/) || [])[1] || '0', 10);
-        if (aTail !== bTail) return aTail - bTail;
-        return al.localeCompare(bl);
-      });
-      return unique.join(', ');
-    };
-
     // Parse inventory/OH file for Special Projects (remodels)
     // Accepts .xlsx or .csv; fuzzy-matches SKU, OH, Style, Description headers.
     const parseInventory = (fileData) => {
@@ -1060,11 +800,6 @@
       const cStyle = findCol(['style number', 'style #', 'style']);
       const cDesc = findCol(['style description', 'description', 'desc', 'name']);
       const cPriceLevel = findCol(['price level', 'price status', 'markdown status', 'md status', 'pricing', 'price']);
-      const cDivision = findCol(['division', 'department', 'dept']);
-      const cCategory = findCol(['category', 'class']);
-      const cSubcategory = findCol(['subcategory', 'sub-category', 'sub category', 'subclass', 'sub-class']);
-      const cColor = findCol(['color description', 'color desc', 'colour description', 'colour desc', 'color', 'colour']);
-      const cSeasonalLC = findCol(['seasonal lifecycle', 'seasnal lifecycle', 'seasonal life cycle', 'lifecycle', 'life cycle', 'seasonal lc', 'lc']);
 
       if (cSKU < 0) throw new Error('SKU column not found in inventory file.');
       if (cOH < 0) throw new Error('On-hand column not found. Expected a column named OH, On Hand, or Qty.');
@@ -1083,11 +818,6 @@
           style: cStyle >= 0 ? String(row[cStyle] || '').trim() : '',
           description: cDesc >= 0 ? String(row[cDesc] || '').trim() : '',
           priceLevel: cPriceLevel >= 0 ? String(row[cPriceLevel] || '').trim() : '',
-          division: cDivision >= 0 ? String(row[cDivision] || '').trim() : '',
-          category: cCategory >= 0 ? String(row[cCategory] || '').trim() : '',
-          subcategory: cSubcategory >= 0 ? String(row[cSubcategory] || '').trim() : '',
-          colorDescription: cColor >= 0 ? String(row[cColor] || '').trim() : '',
-          seasonalLifeCycle: cSeasonalLC >= 0 ? String(row[cSeasonalLC] || '').trim() : '',
         });
       }
       return inventoryData;
@@ -1096,6 +826,34 @@
     // ============================================
     // STEP 1: STORE SETUP & FINANCIAL TOPLINE
     // ============================================
+
+
+    // ===================== NSO ALLOCATION ENGINE (shared) =====================
+    const NSO_SCALES = {"OS":[[1,"OS",5,6,true]],"S-L":[[1,"S",2,3,true],[2,"M",2,3,true],[3,"L",2,3,true]],"XS-XL":[[1,"XS",1,3,false],[2,"S",2,3,true],[3,"M",2,3,true],[4,"L",1,2,true],[5,"XL",1,3,false]],"30-42":[[1,"30",1,1,false],[2,"32",1,3,true],[3,"34",2,3,true],[4,"36",2,3,true],[5,"38",1,3,true],[6,"40",1,3,true],[7,"42",1,1,false]],"S-XL":[[1,"S",1,3,false],[2,"M",2,3,true],[3,"L",2,3,true],[4,"XL",1,3,false]],"M10":[[1,"29",1,1,false],[2,"30",1,2,false],[3,"31",1,2,false],[4,"32",2,3,true],[5,"33",1,3,true],[6,"34",2,3,true],[7,"35",1,2,true],[8,"36",1,2,true],[9,"38",1,1,false]],"M3":[[1,"XS",1,1,false],[2,"S",1,2,false],[3,"M",2,4,true],[4,"L",2,4,true],[5,"XL",1,3,true],[6,"XXL",1,1,false]],"M6":[[1,"30WX30L",1,3,false],[2,"31WX30L",1,3,false],[3,"32WX30L",2,3,true],[4,"33WX30L",1,3,true],[5,"34WX30L",2,3,true],[6,"35WX30L",1,3,false],[7,"36WX30L",1,3,false],[8,"29WX32L",1,1,false],[9,"30WX32L",1,1,false],[10,"31WX32L",1,1,false],[11,"32WX32L",2,3,true],[12,"33WX32L",1,3,true],[13,"34WX32L",2,3,true],[14,"35WX32L",1,3,false],[15,"36WX32L",1,3,false],[16,"38WX32L",1,3,false],[17,"32WX34L",1,1,false],[18,"34WX34L",1,2,false],[19,"36WX34L",1,2,false]],"FM3":[[1,"S",1,1,false],[2,"M",2,4,true],[3,"L",2,4,true],[4,"XL",1,2,true]],"XXS-XXL":[[1,"XXS",1,1,false],[2,"XS",1,3,true],[3,"S",2,4,true],[4,"M",2,4,true],[5,"L",1,2,false],[6,"XL",1,1,false]],"FA":[[1,"XS",1,2,true],[2,"S",2,4,true],[3,"M",2,4,true],[4,"L",1,2,false]],"24-33":[[1,"24",1,2,false],[2,"25",1,2,false],[3,"26",1,3,true],[4,"27",1,3,true],[5,"28",1,3,true],[6,"29",1,3,true],[7,"30",1,2,false],[8,"31",1,2,false],[9,"32",1,1,false]],"FN":[[1,"24",1,3,false],[2,"25",1,3,false],[3,"26",1,3,true],[4,"27",1,3,true],[5,"28",1,3,true],[6,"29",1,3,true],[7,"30",1,3,true],[8,"31",1,2,false]],"00-16":[[1,"0",1,3,false],[2,"2",1,3,true],[3,"4",2,3,true],[4,"6",2,3,true],[5,"8",1,3,true],[6,"10",1,2,false],[7,"12",1,2,false]],"FFA":[[1,"S",2,3,true],[2,"M",2,3,true],[3,"L",1,3,true]],"XS/S, M, L/XL":[[1,"XS/S",3,3,true],[2,"M",2,2,true],[3,"L/XL",1,1,false]],"36-46":[[1,"36",1,1,false],[2,"37",1,3,true],[3,"38",2,3,true],[4,"39",1,3,true],[5,"40",1,3,true],[6,"41",1,2,false],[7,"42",1,3,true],[8,"43",1,3,true],[9,"44",2,3,true],[10,"45",1,3,true],[11,"46",1,2,false]],"8-13":[[1,"8",1,2,false],[2,"9",1,3,true],[3,"10",2,3,true],[4,"11",2,3,true],[5,"12",1,3,true],[6,"13",1,2,false]],"M11":[[1,"36",1,1,false],[2,"38",1,2,true],[3,"40",2,3,true],[4,"42",2,3,true],[5,"44",1,2,true],[6,"46",1,1,false],[7,"48",1,1,false],[8,"50",0,1,false]],"6-11":[[1,"6",1,1,false],[2,"7",1,2,true],[3,"8",2,3,true],[4,"9",2,3,true],[5,"10",1,2,true],[6,"11",1,1,false]],"9-13":[[1,"9",1,3,true],[2,"10",2,3,true],[3,"11",2,3,true],[4,"12",1,3,true],[5,"13",1,2,false]],"F1V":[[1,"7",1,2,true],[2,"8",1,3,true],[3,"9",2,3,true],[4,"10",2,3,true],[5,"11",1,3,false],[6,"12",1,3,true],[7,"13",1,2,false]]};
+    const nsoCoreDepts = ['Mens','Womens','Kids'];
+    const nsoNormDept = (d) => nsoCoreDepts.includes(d) ? d : 'Non Apparel';
+    const nsoSMM = (name) => { const a = NSO_SCALES[name]; return a ? [a.reduce((x,r)=>x+r[2],0), a.reduce((x,r)=>x+r[3],0)] : [0,0]; };
+    // size curve: min-floor + greedy weighted-gap floaters (RunNSO step 2), with optional inventory cap
+    const nsoCurve = (scaleName, depth, opts) => {
+      const s = NSO_SCALES[scaleName]; if (!s) return [];
+      opts = opts || {};
+      const n = s.length, mins = s.map(r=>r[2]), maxs = s.map(r=>r[3]);
+      const pct = s.map(r=>(r[2]+r[3])/2); const pctTot = pct.reduce((a,b)=>a+b,0)||1;
+      let vals = mins.slice(); const sumMins = mins.reduce((a,b)=>a+b,0); const tInt = Math.round(depth||0);
+      if (tInt > sumMins) { const ideal = pct.map(p=>depth*p/pctTot); let fl = tInt - sumMins;
+        while (fl-- > 0) { let best=-1e9, bi=-1; for (let i=0;i<n;i++){ if (vals[i]<maxs[i]){ const sc=(ideal[i]-vals[i])*(pct[i]/pctTot); if (sc>best){best=sc;bi=i;} } } if (bi<0) break; vals[bi]++; } }
+      const availBySize = opts.availBySize || null; const force = opts.force;
+      return s.map((r,i) => {
+        const ideal = vals[i];
+        let val = ideal, flag = '';
+        if (opts.cap && availBySize) {
+          const av = availBySize[r[1]] != null ? availBySize[r[1]] : 0;
+          val = force ? ideal : Math.min(ideal, av);
+          if (!force) { if (val===0 && r[4]) flag='X'; else if (val===0 && ideal>0) flag='–'; }
+        }
+        return { size:r[1], req:r[4], ideal, val, flag };
+      });
+    };
 
     const Step1 = ({ onNext, onDataChange, data }) => {
       const fileInputRef = useRef(null);
@@ -1542,249 +1300,117 @@
 
     const Step2 = ({ onNext, onPrev, onDataChange, data }) => {
       const fileInputRef = useRef(null);
-      const [uploadError, setUploadError] = useState('');
-
-      // ── Store Matrix sync (Sync from Store Matrix button) ────────────────
-      const getCurrentQuarter = () => {
-        const now = new Date();
-        const m = now.getMonth();
-        const q = m < 3 ? 'Q1' : m < 6 ? 'Q2' : m < 9 ? 'Q3' : 'Q4';
-        return { quarter: q, year: now.getFullYear() };
-      };
-
-      const readMatrixCache = () => {
-        try {
-          const raw = localStorage.getItem(MATRIX_CACHE_KEY);
-          if (!raw) return null;
-          const parsed = JSON.parse(raw);
-          return parsed && parsed.data ? parsed : null;
-        } catch (err) { return null; }
-      };
-
-      const writeMatrixCache = (transformed, quarter, year) => {
-        try {
-          localStorage.setItem(MATRIX_CACHE_KEY, JSON.stringify({
-            data: transformed, quarter, year, syncedAt: Date.now(),
-          }));
-        } catch (err) { /* quota or private mode — non-fatal */ }
-      };
-
-      const formatAgo = (ts) => {
-        if (!ts) return 'Not synced yet';
-        const diff = Date.now() - ts;
-        const mins = Math.floor(diff / 60000);
-        if (mins < 1) return 'just now';
-        if (mins < 60) return mins + ' min ago';
-        const hrs = Math.floor(mins / 60);
-        if (hrs < 24) return hrs + 'h ago';
-        return new Date(ts).toLocaleDateString();
-      };
-
-      const cachedOnMount = readMatrixCache();
-      const initialQ = cachedOnMount ? cachedOnMount.quarter : getCurrentQuarter().quarter;
-      const initialY = cachedOnMount ? cachedOnMount.year : getCurrentQuarter().year;
-
-      const [syncQuarter, setSyncQuarter] = useState(initialQ);
-      const [syncYear, setSyncYear] = useState(initialY);
-      const [syncing, setSyncing] = useState(false);
-      const [syncError, setSyncError] = useState('');
-      const [syncSuccess, setSyncSuccess] = useState('');
-      const [lastSyncedAt, setLastSyncedAt] = useState(cachedOnMount ? cachedOnMount.syncedAt : null);
-      // Force re-renders of the "synced X min ago" label without polling work elsewhere.
-      const [, setNowTick] = useState(0);
-      useEffect(() => {
-        const id = setInterval(() => setNowTick(t => t + 1), 60000);
-        return () => clearInterval(id);
-      }, []);
-
-      // Apply parsed/transformed storeTieringData to app state.
-      // Shared by both upload and sync paths so they behave identically downstream
-      // (auto-populate selectedGroups from the store matrix, compute assignedTiers).
-      const applyStoreTieringData = (parsed) => {
-        let autoGroups = [];
-        const simStoreName = (data.simStore || data.proFormaData?.simStore || '').trim();
-        const newStoreName = (data.proFormaData?.newStoreName || data.storeName || '').trim();
-
-        const matrixKeys = Object.keys(parsed.storeMatrix);
-        const findStore = (name) => {
-          if (!name) return null;
-          const lower = name.toLowerCase();
-          return matrixKeys.find(k =>
-            k.toLowerCase() === lower ||
-            lower.includes(k.toLowerCase()) ||
-            k.toLowerCase().includes(lower.split('(')[0].trim().toLowerCase())
-          );
-        };
-
-        let matchedStore = findStore(newStoreName);
-        let matchSource = 'new store (' + newStoreName + ')';
-        if (!matchedStore && simStoreName) {
-          matchedStore = findStore(simStoreName);
-          matchSource = 'Sim Store fallback (' + simStoreName + ')';
-        }
-        if (matchedStore) {
-          autoGroups = parsed.storeMatrix[matchedStore] || [];
-        }
-
-        const getStoreName = (r) => {
-          for (const k of Object.keys(r)) {
-            if (k.toLowerCase().includes('store') || k.toLowerCase().includes('location')) {
-              return String(r[k] || '').trim().toLowerCase();
-            }
-          }
-          return String(Object.values(r)[0] || '').trim().toLowerCase();
-        };
-
-        const getTier = (match) => {
-          if (!match) return '';
-          for (const k of Object.keys(match)) {
-            if (k.toLowerCase().includes('override') && k.toLowerCase().includes('tier')) {
-              const v = String(match[k] || '').trim();
-              if (v) return v;
-            }
-          }
-          for (const k of Object.keys(match)) {
-            if (k.toLowerCase().includes('proposed') && k.toLowerCase().includes('tier')) {
-              const v = String(match[k] || '').trim();
-              if (v) return v;
-            }
-          }
-          return '';
-        };
-
-        const findTierForStore = (name, divData) => {
-          if (!name || !Array.isArray(divData) || divData.length === 0) return '';
-          const lower = name.toLowerCase();
-          const match = divData.find(r => {
-            const s = getStoreName(r);
-            return s === lower || s.includes(lower) || lower.includes(s);
-          });
-          return getTier(match);
-        };
-
-        const getTierWithFallback = (divData) => {
-          const fromNew = findTierForStore(newStoreName, divData);
-          if (fromNew) return fromNew;
-          return findTierForStore(simStoreName, divData);
-        };
-
-        const formatForDropdown = (v) => {
-          if (!v) return '';
-          const s = String(v).trim();
-          if (!s) return '';
-          if (/^tier\b/i.test(s)) return s;
-          if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
-          return s;
-        };
-
-        onDataChange({
-          ...data,
-          storeTieringData: parsed,
-          selectedGroups: autoGroups.length > 0 ? autoGroups : (data.selectedGroups || []),
-          storeMatrixMatch: matchedStore ? { store: matchedStore, source: matchSource } : null,
-          assignedTiers: {
-            mens: formatForDropdown(getTierWithFallback(parsed.mensData)),
-            womens: formatForDropdown(getTierWithFallback(parsed.womensData)),
-            nonApparel: formatForDropdown(getTierWithFallback(parsed.nonApparel)),
-            kids: formatForDropdown(getTierWithFallback(parsed.kidsData)),
-          },
-          step2Complete: true,
-        });
-      };
 
       const handleFileUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        setUploadError('');
 
         const reader = new FileReader();
         reader.onload = (event) => {
           try {
             const parsed = parseStoreTieringTool(new Uint8Array(event.target.result));
-            if (!parsed.allStores.length && !parsed.storeGroups.length) {
-              setUploadError('File parsed but no store or group data was found. The file format may have changed — please share with admin.');
-              return;
+
+            // Auto-populate selectedGroups from Store Matrix
+            // Priority: New Store first → if not found, fall back to Sim Store
+            let autoGroups = [];
+            const simStoreName = (data.simStore || '').trim();
+            const newStoreName = (data.proFormaData.newStoreName || '').trim();
+
+            const matrixKeys = Object.keys(parsed.storeMatrix);
+            const findStore = (name) => {
+              if (!name) return null;
+              const lower = name.toLowerCase();
+              return matrixKeys.find(k =>
+                k.toLowerCase() === lower ||
+                lower.includes(k.toLowerCase()) ||
+                k.toLowerCase().includes(lower.split('(')[0].trim().toLowerCase())
+              );
+            };
+
+            // Try new store first — if it's already in the matrix, use its groups
+            let matchedStore = findStore(newStoreName);
+            let matchSource = 'new store (' + newStoreName + ')';
+
+            // If new store isn't in the matrix, fall back to Sim Store
+            if (!matchedStore && simStoreName) {
+              matchedStore = findStore(simStoreName);
+              matchSource = 'Sim Store fallback (' + simStoreName + ')';
             }
-            applyStoreTieringData(parsed);
+
+            if (matchedStore) {
+              autoGroups = parsed.storeMatrix[matchedStore] || [];
+            }
+
+            onDataChange({
+              ...data,
+              storeTieringData: parsed,
+              selectedGroups: autoGroups.length > 0 ? autoGroups : (data.selectedGroups || []),
+              storeMatrixMatch: matchedStore ? { store: matchedStore, source: matchSource } : null,
+              assignedTiers: (() => {
+                // Helper: get store name from a tiering row (handles different header names)
+                const getStoreName = (r) => {
+                  for (const k of Object.keys(r)) {
+                    if (k.toLowerCase().includes('store') || k.toLowerCase().includes('location')) {
+                      return String(r[k] || '').trim().toLowerCase();
+                    }
+                  }
+                  return String(Object.values(r)[0] || '').trim().toLowerCase();
+                };
+
+                // Helper: get effective tier from a tiering row (handles different header names)
+                const getTier = (match) => {
+                  if (!match) return '';
+                  for (const k of Object.keys(match)) {
+                    if (k.toLowerCase().includes('override') && k.toLowerCase().includes('tier')) {
+                      const v = String(match[k] || '').trim();
+                      if (v) return v;
+                    }
+                  }
+                  for (const k of Object.keys(match)) {
+                    if (k.toLowerCase().includes('proposed') && k.toLowerCase().includes('tier')) {
+                      const v = String(match[k] || '').trim();
+                      if (v) return v;
+                    }
+                  }
+                  return '';
+                };
+
+                // Helper: find a store in division data and return its tier
+                const findTierForStore = (name, divData) => {
+                  if (!name || !Array.isArray(divData) || divData.length === 0) return '';
+                  const lower = name.toLowerCase();
+                  const match = divData.find(r => {
+                    const s = getStoreName(r);
+                    return s === lower || s.includes(lower) || lower.includes(s);
+                  });
+                  return getTier(match);
+                };
+
+                // Priority: try new store name first, fall back to sim store
+                const newName = newStoreName;
+                const simName = simStoreName;
+
+                const getTierWithFallback = (divData) => {
+                  const fromNew = findTierForStore(newName, divData);
+                  if (fromNew) return fromNew;
+                  return findTierForStore(simName, divData);
+                };
+
+                return {
+                  mens: getTierWithFallback(parsed.mensData),
+                  womens: getTierWithFallback(parsed.womensData),
+                  nonApparel: getTierWithFallback(parsed.nonApparel),
+                  kids: getTierWithFallback(parsed.kidsData),
+                };
+              })(),
+              step2Complete: true,
+            });
           } catch (error) {
-            console.error('Store Tiering Tool parse error:', error);
-            setUploadError('Could not parse the file: ' + (error.message || error) + '. Try re-uploading or contact admin if the file format changed.');
+            alert('Error parsing Store Tiering Tool: ' + error.message);
           }
         };
         reader.readAsArrayBuffer(file);
       };
-
-      const flashSyncSuccess = (storeCount, q, y, fromCache) => {
-        const label = fromCache ? 'Loaded from cache' : 'Synced';
-        setSyncSuccess('✓ ' + label + ': ' + storeCount + ' store' + (storeCount === 1 ? '' : 's') + ' from ' + q + ' ' + y);
-        // Auto-clear after 5 seconds so the banner doesn't linger forever.
-        setTimeout(() => setSyncSuccess(''), 5000);
-      };
-
-      const handleSyncFromMatrix = async ({ force = false } = {}) => {
-        const useQ = syncQuarter;
-        const useY = syncYear;
-        setSyncError('');
-        setSyncSuccess('');
-        setSyncing(true);
-        try {
-          // Cache hit: same quarter/year and < 1h old → apply without network.
-          const c = readMatrixCache();
-          if (!force && c && c.quarter === useQ && c.year === useY &&
-              (Date.now() - c.syncedAt) < MATRIX_CACHE_TTL_MS) {
-            applyStoreTieringData(c.data);
-            setLastSyncedAt(c.syncedAt);
-            flashSyncSuccess((c.data.allStores || []).length, useQ, useY, true);
-            return;
-          }
-
-          const json = await fetchViaBridge(useQ, useY);
-          if (!json || json.error) throw new Error((json && json.error) || 'Empty bridge response');
-          if (!Array.isArray(json.stores) || json.stores.length === 0) {
-            throw new Error('No stores returned for ' + useQ + ' ' + useY + '.');
-          }
-
-          const transformed = transformMatrixApiResponse(json);
-          writeMatrixCache(transformed, useQ, useY);
-          setLastSyncedAt(Date.now());
-          applyStoreTieringData(transformed);
-          flashSyncSuccess(json.stores.length, useQ, useY, false);
-        } catch (err) {
-          console.error('Store Matrix sync error:', err);
-          setSyncError('Sync failed: ' + (err.message || err) + '. Try again, or use the upload below.');
-        } finally {
-          setSyncing(false);
-        }
-      };
-
-      // On Step 2 mount: hydrate from cache if fresh, or auto-resync silently if stale.
-      // Skip if the project already has tiering data (don't clobber an in-progress edit).
-      useEffect(() => {
-        const haveData = (data.storeTieringData?.allStores?.length || 0) > 0
-                      || (data.storeTieringData?.storeGroups?.length || 0) > 0;
-        if (haveData) return;
-
-        const c = readMatrixCache();
-        if (!c) return; // no cache, no quarter chosen — wait for user to click Sync.
-
-        if ((Date.now() - c.syncedAt) < MATRIX_CACHE_TTL_MS) {
-          applyStoreTieringData(c.data);
-          setLastSyncedAt(c.syncedAt);
-        } else {
-          // Cache stale → re-fetch via bridge using cached quarter/year.
-          (async () => {
-            try {
-              const json = await fetchViaBridge(c.quarter, c.year);
-              if (!json || json.error || !Array.isArray(json.stores) || json.stores.length === 0) return;
-              const transformed = transformMatrixApiResponse(json);
-              writeMatrixCache(transformed, c.quarter, c.year);
-              setLastSyncedAt(Date.now());
-              applyStoreTieringData(transformed);
-            } catch (err) { /* silent; user can click Sync manually */ }
-          })();
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, []);
 
       const handleGroupToggle = (group) => {
         const currentGroups = data.selectedGroups || [];
@@ -1837,104 +1463,9 @@
         return matrixGroups.length > 0 ? matrixGroups : defaultGroups;
       }, [data.storeTieringData.storeGroups]);
 
-      // Bucket the visible groups by category, ordered by fsl-catorder.
-      // Only used when the data came from the bridge sync (xlsx upload doesn't
-      // carry category metadata). Returns null to fall back to the flat grid.
-      const groupsByCategory = useMemo(() => {
-        const cats = data.storeTieringData.groupCategories || {};
-        if (Object.keys(cats).length === 0) return null;
-
-        const order = data.storeTieringData.categoryOrder || [];
-        const buckets = {};
-        availableGroups.forEach(g => {
-          const cat = cats[g] || 'Uncategorized';
-          if (!buckets[cat]) buckets[cat] = [];
-          buckets[cat].push(g);
-        });
-
-        const ordered = [];
-        order.forEach(cat => {
-          if (buckets[cat] && buckets[cat].length) {
-            ordered.push([cat, buckets[cat]]);
-          }
-        });
-        // Append any categories not in catorder (alphabetical, stable).
-        Object.keys(buckets)
-          .filter(k => order.indexOf(k) === -1)
-          .sort()
-          .forEach(cat => ordered.push([cat, buckets[cat]]));
-        return ordered;
-      }, [availableGroups, data.storeTieringData.groupCategories, data.storeTieringData.categoryOrder]);
-
       return (
         <div className="space-y-8">
           <h2 className="text-2xl font-bold text-gray-800">Step 2: Store Tiering & Groups</h2>
-
-          {/* Sync from Store Matrix — primary path. Upload below is a fallback. */}
-          <div className="mb-4 bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div>
-                <div className="text-base font-semibold text-gray-800">Sync from Store Matrix</div>
-                <div className="text-xs text-gray-500 mt-0.5">
-                  Pulls live tier &amp; group assignments straight from the Store Matrix for the selected quarter.
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <select
-                  value={syncQuarter}
-                  onChange={e => setSyncQuarter(e.target.value)}
-                  disabled={syncing}
-                  className="border border-gray-300 rounded px-2 py-1.5 text-sm bg-white"
-                >
-                  {['Q1','Q2','Q3','Q4'].map(q => <option key={q} value={q}>{q}</option>)}
-                </select>
-                <select
-                  value={syncYear}
-                  onChange={e => setSyncYear(parseInt(e.target.value, 10))}
-                  disabled={syncing}
-                  className="border border-gray-300 rounded px-2 py-1.5 text-sm bg-white"
-                >
-                  {(() => {
-                    // Auto-extending year window: previous year through current+2.
-                    // Rolls forward each calendar year so you never have to update the code.
-                    const cy = new Date().getFullYear();
-                    return [cy - 1, cy, cy + 1, cy + 2].map(y => <option key={y} value={y}>{y}</option>);
-                  })()}
-                </select>
-                <button
-                  onClick={() => handleSyncFromMatrix({ force: true })}
-                  disabled={syncing}
-                  className="bg-[#1C3554] hover:bg-[#162B44] disabled:opacity-50 text-white text-sm font-semibold px-4 py-1.5 rounded transition"
-                >
-                  {syncing ? 'Syncing…' : 'Sync from Store Matrix'}
-                </button>
-              </div>
-            </div>
-            <div className="mt-3 text-xs text-gray-500 flex items-center gap-3">
-              <span>Last sync: {formatAgo(lastSyncedAt)}</span>
-              {lastSyncedAt && (
-                <button
-                  onClick={() => handleSyncFromMatrix({ force: true })}
-                  disabled={syncing}
-                  className="text-[#1C3554] underline hover:no-underline disabled:opacity-50"
-                >
-                  Sync now
-                </button>
-              )}
-            </div>
-            {syncSuccess && (
-              <div className="mt-3 bg-green-50 border border-green-300 text-green-800 text-xs font-semibold px-3 py-2 rounded flex items-center gap-2">
-                <span>{syncSuccess}</span>
-              </div>
-            )}
-            {syncError && (
-              <div className="mt-3 bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 rounded">
-                {syncError}
-              </div>
-            )}
-          </div>
-
-          <div className="text-xs uppercase tracking-wider text-gray-400 -my-2 text-center">— or upload manually —</div>
 
           <div className="mb-8">
             <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-gray-400 transition"
@@ -1949,11 +1480,6 @@
               <div className="text-lg font-semibold text-gray-700">Upload Store Tiering Tool (.xlsx)</div>
               <p className="text-sm text-gray-500 mt-2">Click or drag Store Tiering Tool file</p>
             </div>
-            {uploadError && (
-              <div className="mt-3 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded">
-                <strong>Upload failed.</strong> {uploadError}
-              </div>
-            )}
           </div>
 
           {/* Tier Assignments — New Store vs Comp Stores */}
@@ -2018,18 +1544,6 @@
                     const compName = String(data.proFormaData?.compStoreName || '').trim();
                     const compTier = lookupTier(compName, td[div.dataKey]);
 
-                    // Format raw tier values ("2", "3+") as "Tier 2", "Tier 3+".
-                    // Pass through placeholders ("—"), already-formatted values ("Tier 1"),
-                    // and non-numeric labels ("Inspo") unchanged.
-                    const formatTier = (v) => {
-                      if (!v || v === '—') return v || '';
-                      const s = String(v).trim();
-                      if (!s) return '';
-                      if (/^tier\b/i.test(s)) return s;
-                      if (/^\d+\+?$/.test(s)) return 'Tier ' + s;
-                      return s;
-                    };
-
                     return (
                       <tr key={div.key} className="border-b border-gray-200 hover:bg-gray-50">
                         <td className="px-4 py-2 font-semibold text-gray-800">{div.label}</td>
@@ -2044,20 +1558,19 @@
                             <option value="Tier 1">Tier 1</option>
                             <option value="Tier 2">Tier 2</option>
                             <option value="Tier 3">Tier 3</option>
-                            <option value="Tier 4">Tier 4</option>
                             <option value="Inspo">Inspo</option>
                           </select>
                         </td>
                         {/* Primary Comp Store — read-only from tiering data */}
                         {compName && (
-                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{formatTier(compTier)}</td>
+                          <td className="px-4 py-2 text-center bg-green-50 font-semibold text-gray-700 text-xs">{compTier}</td>
                         )}
                         {/* Additional Comp Stores */}
                         {(data.proFormaData?.compStoreAnalysis || []).map((comp, idx) => {
                           const name = String(comp.compStore || '').trim();
                           if (!name || name === compName) return null;
                           const tier = lookupTier(name, td[div.dataKey]);
-                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{formatTier(tier)}</td>;
+                          return <td key={idx} className="px-4 py-2 text-center font-semibold text-gray-700 text-xs">{tier}</td>;
                         })}
                       </tr>
                     );
@@ -2092,45 +1605,19 @@
                 No Store Matrix sheet found — showing default groups. Add a "Store Matrix" tab to your Store Tiering Tool to auto-populate.
               </p>
             )}
-            {groupsByCategory ? (
-              <div className="space-y-5">
-                {groupsByCategory.map(([cat, groups]) => (
-                  <div key={cat}>
-                    <h4 className="text-xs font-bold text-gray-800 uppercase tracking-wider mb-2 pb-1 border-b border-gray-200">
-                      {cat}
-                      <span className="text-gray-400 font-normal normal-case ml-2">({groups.length})</span>
-                    </h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                      {groups.map(group => (
-                        <label key={group} className="flex items-center space-x-3 cursor-pointer p-2 rounded hover:bg-gray-50">
-                          <input
-                            type="checkbox"
-                            checked={(data.selectedGroups || []).includes(group)}
-                            onChange={() => handleGroupToggle(group)}
-                            className="w-4 h-4 text-blue-600 border-gray-300 rounded cursor-pointer"
-                          />
-                          <span className="text-sm text-gray-700">{group}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {availableGroups.map((group, idx) => (
-                  <label key={idx} className="flex items-center space-x-3 cursor-pointer p-2 rounded hover:bg-gray-50">
-                    <input
-                      type="checkbox"
-                      checked={(data.selectedGroups || []).includes(group)}
-                      onChange={() => handleGroupToggle(group)}
-                      className="w-4 h-4 text-blue-600 border-gray-300 rounded cursor-pointer"
-                    />
-                    <span className="text-sm text-gray-700">{group}</span>
-                  </label>
-                ))}
-              </div>
-            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {availableGroups.map((group, idx) => (
+                <label key={idx} className="flex items-center space-x-3 cursor-pointer p-2 rounded hover:bg-gray-50">
+                  <input
+                    type="checkbox"
+                    checked={(data.selectedGroups || []).includes(group)}
+                    onChange={() => handleGroupToggle(group)}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded cursor-pointer"
+                  />
+                  <span className="text-sm text-gray-700">{group}</span>
+                </label>
+              ))}
+            </div>
           </div>
 
           <div className="flex justify-between pt-8 border-t border-gray-200">
@@ -2245,8 +1732,6 @@
             onDataChange({
               ...data,
               pstData: parsed,
-              pstFileName: file.name,
-              pstUploadedAt: new Date().toISOString(),
               selectedDeliveries: autoSelectedDeliveries.length > 0 ? autoSelectedDeliveries : (data.selectedDeliveries || []),
               step3Complete: true,
             });
@@ -2398,58 +1883,18 @@
           )}
 
           <div className="mb-8">
-            {(data.pstData || []).length === 0 ? (
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-gray-400 transition"
-                onClick={() => fileInputRef.current?.click()}>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <div className="text-lg font-semibold text-gray-700">Upload PST (.xlsx)</div>
-                <p className="text-sm text-gray-500 mt-2">Click or drag PST file</p>
-              </div>
-            ) : (
-              <div className="bg-white border border-gray-300 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs font-semibold">✓ Loaded</span>
-                    <span className="text-sm font-semibold text-gray-700">{data.pstFileName || 'PST.xlsx'}</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="text-xs font-semibold text-[#1C3554] hover:text-[#162B44]"
-                    >↻ Replace file</button>
-                    <button
-                      onClick={() => {
-                        if (!confirm('Clear the PST file? This will reset delivery selections and Step 4 review actions.')) return;
-                        const next = { ...data };
-                        delete next.pstData;
-                        delete next.pstFileName;
-                        delete next.selectedDeliveries;
-                        next.step3Complete = false;
-                        onDataChange(next);
-                      }}
-                      className="text-xs font-semibold text-gray-400 hover:text-red-600"
-                    >Clear</button>
-                  </div>
-                </div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-                <div className="flex gap-6 text-xs text-gray-600">
-                  <span><strong className="text-gray-900 font-semibold">{(data.pstData || []).length.toLocaleString()}</strong> rows loaded</span>
-                  <span><strong className="text-gray-900 font-semibold">{new Set((data.pstData || []).map(r => `${r.seasonCode}:${r.deliveryMonth}`).filter(k => k !== ':')).size}</strong> unique deliveries</span>
-                </div>
-              </div>
-            )}
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-gray-400 transition"
+              onClick={() => fileInputRef.current?.click()}>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+              <div className="text-lg font-semibold text-gray-700">Upload PST (.xlsx)</div>
+              <p className="text-sm text-gray-500 mt-2">Click or drag PST file</p>
+            </div>
           </div>
 
           {/* Auto-selection info */}
@@ -2594,8 +2039,6 @@
         seasonalLifeCycle: [],
         mdExitWeek: [],
         priceLevel: [],
-        onHand: [],
-        source: [],
         action: [],
         notes: [],
       });
@@ -2621,37 +2064,27 @@
       const baseData = useMemo(() => {
         const selectedDeliveries = data.selectedDeliveries || [];
         const selectedGroups = data.selectedGroups || [];
-        // Normalize tier/group strings for tolerant matching: lowercase, collapse
-        // whitespace, normalize "+" symbol variations, drop non-alphanumeric padding.
-        const normalizeTier = (s) => String(s || '')
-          .toLowerCase()
-          .replace(/\u00A0/g, ' ')          // non-breaking space → space
-          .replace(/\s+/g, ' ')             // collapse whitespace
-          .replace(/\s*\+\s*/g, '+')        // remove spaces around +
-          .trim();
-        const selectedGroupsNorm = new Set(selectedGroups.map(normalizeTier));
         const matched = (data.pstData || []).filter(row => {
           const dm = String(row.deliveryMonth || '').trim();
           const matchesDelivery = selectedDeliveries.length === 0 ||
             selectedDeliveries.includes(`${String(row.seasonCode||'').trim()}:${dm}`) ||
             selectedDeliveries.includes(dm);
-          const tierNorm = normalizeTier(row.storeTier);
           const matchesTier = selectedGroups.length === 0 ||
-            selectedGroupsNorm.has(tierNorm) ||
-            tierNorm === 'all stores';
+            selectedGroups.includes(row.storeTier) ||
+            row.storeTier === 'ALL STORES';
           return matchesDelivery && matchesTier;
         });
-        // Deduplicate by SKU — merge delivery months in calendar order
+        // Deduplicate by SKU — merge delivery months
         const skuMap = new Map();
         matched.forEach(row => {
-          const dm = String(row.deliveryMonth || '').trim();
           if (skuMap.has(row.sku)) {
             const existing = skuMap.get(row.sku);
-            if (dm) {
-              existing.deliveryMonth = sortDeliveryMonths(existing.deliveryMonth + ', ' + dm);
+            const dm = String(row.deliveryMonth || '').trim();
+            if (dm && !existing.deliveryMonth.includes(dm)) {
+              existing.deliveryMonth = existing.deliveryMonth + ', ' + dm;
             }
           } else {
-            skuMap.set(row.sku, { ...row, deliveryMonth: sortDeliveryMonths(dm) });
+            skuMap.set(row.sku, { ...row, deliveryMonth: String(row.deliveryMonth || '').trim() });
           }
         });
         const deduped = [...skuMap.values()];
@@ -2670,21 +2103,21 @@
             if (inv) {
               return { ...r, source: 'both', onHand: inv.onHand || 0, priceLevel: inv.priceLevel || '', defaultAction: 'Keep' };
             }
-            return { ...r, source: 'pst', onHand: 0, priceLevel: '', defaultAction: 'Keep' };
+            return { ...r, source: 'pst', onHand: 0, priceLevel: '', defaultAction: 'Add' };
           });
           // Build a lookup of the FULL PST (all deliveries, all tiers) keyed by SKU —
           // used to enrich inventory-only SKUs that exist in PST but under an unselected delivery.
           const fullPstBySku = new Map();
           (data.pstData || []).forEach(row => {
             if (!row.sku) return;
-            const dm = String(row.deliveryMonth || '').trim();
             if (fullPstBySku.has(row.sku)) {
               const existing = fullPstBySku.get(row.sku);
-              if (dm) {
-                existing.deliveryMonth = sortDeliveryMonths(existing.deliveryMonth + ', ' + dm);
+              const dm = String(row.deliveryMonth || '').trim();
+              if (dm && !existing.deliveryMonth.includes(dm)) {
+                existing.deliveryMonth = existing.deliveryMonth + ', ' + dm;
               }
             } else {
-              fullPstBySku.set(row.sku, { ...row, deliveryMonth: sortDeliveryMonths(dm) });
+              fullPstBySku.set(row.sku, { ...row, deliveryMonth: String(row.deliveryMonth || '').trim() });
             }
           });
           // Add inventory-only SKUs (not in the selected PST slice). Enrich with full-PST metadata if available.
@@ -2693,42 +2126,32 @@
             if (pstSkus.has(inv.sku)) return;
             const pstMeta = fullPstBySku.get(inv.sku);
             if (pstMeta) {
-              // SKU is in PST but under an unselected delivery — pull in metadata
-              // for filtering/display, but blank out the Delivery field since
-              // those deliveries are out of scope. OH file values win for fields
-              // it has populated (current state of the store > old PST snapshots).
+              // SKU is in PST but under an unselected delivery — pull in all metadata.
               withInventory.push({
                 ...pstMeta,
-                department: inv.division || pstMeta.department || '',
-                category: inv.category || pstMeta.category || '',
-                subcategory: inv.subcategory || pstMeta.subcategory || '',
-                colorDescription: inv.colorDescription || pstMeta.colorDescription || '',
-                seasonalLifeCycle: inv.seasonalLifeCycle || pstMeta.seasonalLifeCycle || '',
-                styleDescription: pstMeta.styleDescription || inv.description || '',
-                deliveryMonth: '',
                 source: 'inventory',
                 onHand: inv.onHand || 0,
                 priceLevel: inv.priceLevel || '',
-                defaultAction: 'Keep',
+                defaultAction: 'Extract',
               });
             } else {
-              // SKU isn't in PST at all — use whatever the OH file gave us.
+              // SKU isn't in PST at all — show whatever the OH file gave us.
               withInventory.push({
                 sku: inv.sku,
                 style: inv.style || '',
                 styleDescription: inv.description || '',
-                colorDescription: inv.colorDescription || '',
-                department: inv.division || '',
-                category: inv.category || '',
-                subcategory: inv.subcategory || '',
+                colorDescription: '',
+                department: '',
+                category: '',
+                subcategory: '',
                 deliveryMonth: '',
                 storeTier: '',
-                seasonalLifeCycle: inv.seasonalLifeCycle || '',
+                seasonalLifeCycle: '',
                 mdExitWeek: '',
                 source: 'inventory',
                 onHand: inv.onHand || 0,
                 priceLevel: inv.priceLevel || '',
-                defaultAction: 'Keep',
+                defaultAction: 'Extract',
               });
             }
           });
@@ -2755,8 +2178,6 @@
         seasonalLifeCycle: [...new Set(baseData.map(r => r.seasonalLifeCycle).filter(Boolean))].sort(),
         mdExitWeek: [...new Set(baseData.map(r => r.mdExitWeek).filter(Boolean))].sort(),
         priceLevel: [...new Set(baseData.map(r => r.priceLevel).filter(Boolean))].sort(),
-        onHand: [...new Set(baseData.map(r => String(r.onHand ?? 0)))].sort((a,b) => Number(a) - Number(b)),
-        source: [...new Set(baseData.map(r => r.source).filter(Boolean))].sort(),
         notes: [...new Set(baseData.map(r => skuNotes[r.sku]).filter(Boolean))].sort(),
       }), [baseData, skuNotes]);
 
@@ -2780,8 +2201,6 @@
           if (filters.seasonalLifeCycle.length && !filters.seasonalLifeCycle.includes(row.seasonalLifeCycle)) return false;
           if (filters.mdExitWeek.length && !filters.mdExitWeek.includes(row.mdExitWeek)) return false;
           if (filters.priceLevel.length && !filters.priceLevel.includes(row.priceLevel || '')) return false;
-          if (filters.onHand.length && !filters.onHand.includes(String(row.onHand ?? 0))) return false;
-          if (filters.source.length && !filters.source.includes(row.source || '')) return false;
           if (filters.action.length) {
             const act = getAction(row);
             if (!filters.action.includes(act)) return false;
@@ -3327,6 +2746,13 @@
                   <tr className="bg-gray-100 border-b border-gray-300">
                     <th className="px-1 py-1.5 text-left" style={{width:'30px'}}><input type="checkbox" onChange={(e) => { e.target.checked ? setSelectedRows(new Set(paginatedData.map((_, i) => i))) : setSelectedRows(new Set()); }} className="w-3.5 h-3.5" /></th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">SKU</th>
+                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
+                      <React.Fragment>
+                        <th className="px-1 py-1.5 text-left text-xs font-bold">Source</th>
+                        <th className="px-1 py-1.5 text-right text-xs font-bold">OH</th>
+                        <th className="px-1 py-1.5 text-left text-xs font-bold">Price Level</th>
+                      </React.Fragment>
+                    )}
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Division</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Category</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Subcategory</th>
@@ -3336,22 +2762,20 @@
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Delivery</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Store Tier</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">MD Exit Wk</th>
-                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
-                      <React.Fragment>
-                        <th className="px-1 py-1.5 text-left text-xs font-bold">Price Level</th>
-                        <th className="px-1 py-1.5 text-right text-xs font-bold">OH</th>
-                      </React.Fragment>
-                    )}
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Action</th>
                     <th className="px-1 py-1.5 text-left text-xs font-bold">Notes</th>
-                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
-                      <th className="px-1 py-1.5 text-left text-xs font-bold">Source</th>
-                    )}
                   </tr>
                   {/* Filter row */}
                   <tr className="bg-gray-50 border-b-2 border-gray-300">
                     <th className="px-1 py-1"></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.sku} selected={filters.sku} onChange={(v) => setFilter('sku', v)} /></th>
+                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
+                      <React.Fragment>
+                        <th className="px-1 py-1"></th>
+                        <th className="px-1 py-1"></th>
+                        <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.priceLevel} selected={filters.priceLevel} onChange={(v) => setFilter('priceLevel', v)} /></th>
+                      </React.Fragment>
+                    )}
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.department} selected={filters.department} onChange={(v) => setFilter('department', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.category} selected={filters.category} onChange={(v) => setFilter('category', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.subcategory} selected={filters.subcategory} onChange={(v) => setFilter('subcategory', v)} /></th>
@@ -3361,17 +2785,8 @@
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.deliveryMonth} selected={filters.deliveryMonth} onChange={(v) => setFilter('deliveryMonth', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.storeTier} selected={filters.storeTier} onChange={(v) => setFilter('storeTier', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.mdExitWeek} selected={filters.mdExitWeek} onChange={(v) => setFilter('mdExitWeek', v)} /></th>
-                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
-                      <React.Fragment>
-                        <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.priceLevel} selected={filters.priceLevel} onChange={(v) => setFilter('priceLevel', v)} /></th>
-                        <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.onHand} selected={filters.onHand} onChange={(v) => setFilter('onHand', v)} /></th>
-                      </React.Fragment>
-                    )}
                     <th className="px-1 py-1"><MultiSelectFilter options={data.isSpecial && (data.inventoryData || []).length > 0 ? ['Keep', 'Drop', 'Add', 'Extract'] : ['Keep', 'Drop', 'Add']} selected={filters.action} onChange={(v) => setFilter('action', v)} /></th>
                     <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.notes} selected={filters.notes} onChange={(v) => setFilter('notes', v)} /></th>
-                    {data.isSpecial && (data.inventoryData || []).length > 0 && (
-                      <th className="px-1 py-1"><MultiSelectFilter options={uniqueVals.source} selected={filters.source} onChange={(v) => setFilter('source', v)} /></th>
-                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -3392,6 +2807,21 @@
                       <tr key={idx} className={`${bgColor} border-b border-gray-200`}>
                         <td className="px-2 py-1.5"><input type="checkbox" checked={selectedRows.has(idx)} onChange={() => handleRowSelect(idx)} className="w-3.5 h-3.5" /></td>
                         <td className="px-2 py-1.5 text-xs font-mono">{row.sku}</td>
+                        {showInv && (
+                          <React.Fragment>
+                            <td className="px-2 py-1.5 text-xs">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${sourcePillClass}`}>{sourceLabel}</span>
+                            </td>
+                            <td className="px-2 py-1.5 text-xs text-right font-mono">{row.onHand > 0 ? row.onHand : <span className="text-gray-300">—</span>}</td>
+                            <td className="px-2 py-1.5 text-xs">
+                              {row.priceLevel ? (
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${/markdown|\bmd\b|sale|clearance/i.test(row.priceLevel) ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'}`}>{row.priceLevel}</span>
+                              ) : (
+                                <span className="text-gray-300">—</span>
+                              )}
+                            </td>
+                          </React.Fragment>
+                        )}
                         <td className="px-2 py-1.5 text-xs">{row.department}</td>
                         <td className="px-2 py-1.5 text-xs">{row.category}</td>
                         <td className="px-2 py-1.5 text-xs">{row.subcategory}</td>
@@ -3401,18 +2831,6 @@
                         <td className="px-2 py-1.5 text-xs">{row.deliveryMonth}</td>
                         <td className="px-2 py-1.5 text-xs">{row.storeTier}</td>
                         <td className="px-2 py-1.5 text-xs">{row.mdExitWeek}</td>
-                        {showInv && (
-                          <React.Fragment>
-                            <td className="px-2 py-1.5 text-xs">
-                              {row.priceLevel ? (
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${/markdown|\bmd\b|sale|clearance/i.test(row.priceLevel) ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-700'}`}>{row.priceLevel}</span>
-                              ) : (
-                                <span className="text-gray-300">—</span>
-                              )}
-                            </td>
-                            <td className="px-2 py-1.5 text-xs text-right font-mono">{row.onHand > 0 ? row.onHand : <span className="text-gray-300">—</span>}</td>
-                          </React.Fragment>
-                        )}
                         <td className="px-2 py-1.5">
                           <select value={action} onChange={(e) => handleActionChange(row.sku, e.target.value)} className="px-1 py-0.5 border border-gray-300 rounded text-xs">
                             <option value="Keep">Keep</option>
@@ -3422,11 +2840,6 @@
                           </select>
                         </td>
                         <td className="px-2 py-1.5"><input type="text" value={skuNotes[row.sku] || ''} onChange={(e) => handleNoteChange(row.sku, e.target.value)} placeholder="Notes..." className="w-full px-1 py-0.5 border border-gray-300 rounded text-xs" /></td>
-                        {showInv && (
-                          <td className="px-2 py-1.5 text-xs">
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap ${sourcePillClass}`}>{sourceLabel}</span>
-                          </td>
-                        )}
                       </tr>
                     );
                   })}
@@ -3486,7 +2899,7 @@
               onClick={() => { onDataChange({ ...data, skuActions, skuNotes, divisionSignoffs, skuTargets, addedSkus }); onNext(5); }}
               className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700"
             >
-              Next: Depth Review
+              Next: Allocation
             </button>
           </div>
         </div>
@@ -3497,7 +2910,384 @@
     // STEP 5: DEPTH REVIEW RECAP
     // ============================================
 
+
+    // ===================== STEP 5: ALLOCATION =====================
     const Step5 = ({ onNext, onPrev, onDataChange, data }) => {
+      const S = data.allocSettings || {};
+      const [target, setTarget] = useState(S.target != null ? S.target : 6000);
+      const [allocDate, setAllocDate] = useState(S.allocDate || '');
+      const [openDate, setOpenDate] = useState(S.openDate || '');
+      const [weights, setWeights] = useState(S.weights || {});
+      const [cap, setCap] = useState(!!S.cap);
+      const ov = data.allocOverrides || {};
+      const [depthAlt, setDepthAlt] = useState(ov.depthAlt || {});
+      const [scaleOverride, setScaleOverride] = useState(ov.scaleOverride || {});
+      const [forceSend, setForceSend] = useState(ov.forceSend || {});
+      const [l1F, setL1F] = useState({ filters:{}, sortCol:null, sortDir:1 });
+      const [l2F, setL2F] = useState({ filters:{}, sortCol:null, sortDir:1 });
+      const [pop, setPop] = useState(null); // {table,col,rect}
+
+      const persist = (patch) => onDataChange({ ...data, ...patch });
+      const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, ...next } });
+      const saveOverrides = (next) => persist({ allocOverrides: { depthAlt, scaleOverride, forceSend, ...next } });
+
+      // ---------- included assortment (mirrors Depth Review) ----------
+      const assortment = useMemo(() => {
+        const selectedDeliveries = data.selectedDeliveries || [];
+        const selectedGroups = data.selectedGroups || [];
+        const addedSkus = data.addedSkus || [];
+        const skuActions = data.skuActions || {};
+        const matched = (data.pstData || []).filter(row => {
+          const dm = String(row.deliveryMonth || '').trim();
+          const md = selectedDeliveries.length === 0 || selectedDeliveries.includes(`${String(row.seasonCode||'').trim()}:${dm}`) || selectedDeliveries.includes(dm);
+          const mt = selectedGroups.length === 0 || selectedGroups.includes(row.storeTier) || row.storeTier === 'ALL STORES';
+          return md && mt;
+        });
+        const seen = new Set(matched.map(r=>r.sku));
+        const extras = addedSkus.filter(r => !seen.has(r.sku));
+        const all = [...matched, ...extras];
+        const out = []; const dedup = new Set();
+        all.forEach(r => {
+          const act = skuActions[r.sku] || 'Keep';
+          if (act === 'Drop' || act === 'Extract') return;
+          if (!r.sku || dedup.has(r.sku)) return; dedup.add(r.sku);
+          const scale = scaleOverride[r.sku] || r.sizeScale || '';
+          out.push({ sku:r.sku, div:nsoNormDept(r.department||'Other'), cat:r.category||'Other', sub:r.subcategory||'Other',
+            style:r.styleDescription||r.style||'', color:r.colorDescription||'', baseScale:r.sizeScale||'', scale });
+        });
+        return out;
+      }, [data.pstData, data.selectedDeliveries, data.selectedGroups, data.addedSkus, data.skuActions, scaleOverride]);
+
+      const inv = data.allocInv || null;       // {sku:{size:{avail,upc}}}
+      const sim = data.allocSim || null;        // {combo:{store:units}}
+      const simStores = (data.allocSimStores || []);
+      const tracker = data.allocTracker || {};  // {sku:{oo,force,status}}
+      const reservedUnits = data.reservedUnits || {};
+
+      // ---------- generic file parse ----------
+      const parseSheet = (file, cb) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const wb = XLSX.read(new Uint8Array(e.target.result), { type:'array' });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+            cb(rows);
+          } catch (err) { alert('Error parsing file: ' + err.message); }
+        };
+        reader.readAsArrayBuffer(file);
+      };
+      const headerIndexer = (rows) => {
+        let hi = 0; for (let i=0;i<Math.min(rows.length,15);i++){ if ((rows[i]||[]).filter(c=>String(c).trim()).length >= 2){ hi=i; break; } }
+        const hdr = (rows[hi]||[]).map(h=>String(h).trim().toLowerCase());
+        const find = (...names) => { for (const nm of names){ const i = hdr.findIndex(h => h === nm.toLowerCase() || h.includes(nm.toLowerCase())); if (i>=0) return i; } return -1; };
+        return { hi, hdr, find };
+      };
+
+      const onInv = (file) => parseSheet(file, (rows) => {
+        const { hi, find } = headerIndexer(rows);
+        const cS = find('sku','style-color','style color'), cSize = find('size'), cAv = find('avail','available','on hand','stock','units'), cU = find('upc');
+        if (cS < 0 || cSize < 0) { alert('42 Inventory: need at least SKU and Size columns.'); return; }
+        const map = {};
+        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const sku=String(r[cS]||'').trim(); const size=String(r[cSize]||'').trim(); if(!sku||!size)continue;
+          map[sku]=map[sku]||{}; map[sku][size]={ avail: cAv>=0?(Number(r[cAv])||0):0, upc: cU>=0?String(r[cU]||''):'' }; }
+        persist({ allocInv: map });
+      });
+      const onSim = (file) => parseSheet(file, (rows) => {
+        const { hi, find } = headerIndexer(rows);
+        const cLoc=find('location','store','door'), cDiv=find('division','department'), cCat=find('category'), cSub=find('sub-category','subcategory','sub category'), cU=find('net sales units','units','sales units','net units');
+        if (cDiv<0 || cCat<0 || cU<0){ alert('42 Sim Doors: need Division, Category and Net Sales Units columns.'); return; }
+        const map={}, stores=new Set();
+        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const div=nsoNormDept(String(r[cDiv]||'').trim()); const cat=String(r[cCat]||'').trim(); const sub=cSub>=0?String(r[cSub]||'').trim():'Other'; const u=Number(r[cU])||0; const loc=cLoc>=0?String(r[cLoc]||'').trim():'All'; if(!div||!cat)continue;
+          stores.add(loc); const k=div+'|'+cat+'|'+sub; map[k]=map[k]||{}; map[k][loc]=(map[k][loc]||0)+u; }
+        const storeArr=[...stores]; const w={}; storeArr.forEach(s=>{ w[s] = weights[s]!=null?weights[s]:Number((1/storeArr.length).toFixed(2)); });
+        setWeights(w); persist({ allocSim: map, allocSimStores: storeArr, allocSettings:{ target, allocDate, openDate, cap, weights:w } });
+      });
+      const onTracker = (file) => parseSheet(file, (rows) => {
+        const { hi, find } = headerIndexer(rows);
+        const cS=find('sku','style-color'), cCS=find('cs oo','cs delivery'), cNS=find('ns oo','ns delivery'), cOO=find('next oo','oo date','on order','delivery date'), cF=find('force'), cSt=find('status');
+        if (cS<0){ alert('SKU Tracker: need a SKU column.'); return; }
+        const map={};
+        const toISO=(v)=>{ if(v==='' || v==null) return ''; if(typeof v==='number'){ const d=XLSX.SSF? new Date(Math.round((v-25569)*86400*1000)):null; return d?d.toISOString().slice(0,10):''; } const d=new Date(v); return isNaN(d)?String(v):d.toISOString().slice(0,10); };
+        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const sku=String(r[cS]||'').trim(); if(!sku)continue;
+          let oo=''; const cs=cCS>=0?toISO(r[cCS]):''; const ns=cNS>=0?toISO(r[cNS]):''; if(cs||ns){ oo=[cs,ns].filter(Boolean).sort()[0]; } else if(cOO>=0){ oo=toISO(r[cOO]); }
+          if (!oo) oo='N/A';
+          map[sku]={ oo, force: cF>=0 ? (String(r[cF]||'').trim().toUpperCase()==='X' || String(r[cF]).toLowerCase()==='true') : false, status: cSt>=0?String(r[cSt]||'').trim():'' }; }
+        persist({ allocTracker: map });
+      });
+
+      // ---------- status (SKU Master Q logic) ----------
+      const statusOf = (sku, brokenFromInv) => {
+        if (forceSend[sku] || (tracker[sku] && tracker[sku].force)) return 'READY';
+        const t = tracker[sku] || {};
+        if (t.status) return t.status;            // explicit status wins if provided
+        const broken = brokenFromInv;
+        if (!broken) return 'READY';
+        if (!t.oo || t.oo === 'N/A') return 'Broken, no Replen';
+        if (!allocDate || !openDate) return 'Broken, no Replen';
+        const oo = new Date(t.oo), a = new Date(allocDate), o = new Date(openDate);
+        if (oo < a) return 'On time for Drop';
+        if (oo < new Date(o.getTime() - 7*864e5)) return 'On time for Opening';
+        return 'Arriving after Open';
+      };
+
+      // ---------- engine ----------
+      const eng = useMemo(() => {
+        // group by div>cat>sub
+        const G = {};
+        assortment.forEach(s => { const k=s.div+' \u203A '+s.cat+' \u203A '+s.sub;
+          if (!G[k]) G[k] = { div:s.div, cat:s.cat, sub:s.sub, skus:[] }; G[k].skus.push(s); });
+        const keys = Object.keys(G);
+        const simK = (g) => g.div+'|'+g.cat+'|'+g.sub;
+        const slsOf = (g) => { const m = sim ? (sim[simK(g)]||{}) : {}; let v=0; (simStores.length?simStores:Object.keys(m)).forEach(st=>{ v += (weights[st]!=null?weights[st]:1) * (m[st]||0); }); return v; };
+        const gmm = (g) => { let mn=0,mx=0; g.skus.forEach(s=>{ const [a,b]=nsoSMM(s.scale); mn+=a; mx+=b; }); return [mn,mx]; };
+        const sls = keys.map(k=>slsOf(G[k])); const slsSum = sls.reduce((a,b)=>a+b,0) || 1;
+        const rows = keys.map((k,i) => { const g=G[k], ct=g.skus.length, [minU,maxU]=gmm(g), demand=sls[i]/slsSum, raw=demand*target;
+          return { k, grp:g, ct, minU, maxU, sls:sls[i], demand, raw, eligible:(raw>=minU), prop:minU }; });
+        // baseline sprinkle to target (ignores depthAlt)
+        let remaining = target - rows.reduce((a,r)=>a+r.prop,0);
+        for (let it=0; it<10 && remaining>0.5; it++){ const pool=rows.filter(r=>r.eligible&&r.prop<r.maxU); const ps=pool.reduce((a,r)=>a+r.sls,0); if(ps===0)break;
+          pool.forEach(r=>{ const add=remaining*(r.sls/ps), hr=r.maxU-r.prop; r.prop+=Math.min(add,hr); }); remaining=target-rows.reduce((a,r)=>a+r.prop,0); }
+        rows.forEach(r=>r.prop=Math.round(r.prop));
+        let diff = Math.round(rows.reduce((a,r)=>a+r.prop,0) - target);
+        while (diff>0){ let bv=1e9,bi=-1; rows.forEach((r,idx)=>{ const ab=r.prop-r.minU; if(r.eligible&&ab>0&&ab<bv){bv=ab;bi=idx;} }); if(bi<0)break; rows[bi].prop--; diff--; }
+        while (diff<0){ let bh=0,bi=-1; rows.forEach((r,idx)=>{ const hr=r.maxU-r.prop; if(r.eligible&&hr>bh){bh=hr;bi=idx;} }); if(bi<0)break; rows[bi].prop++; diff++; }
+        // independent depth-alt override
+        const depthByKey = {};
+        rows.forEach(r => { r.baseFinal=r.prop; if (depthAlt[r.k]>0){ r.overwrite=1; r.final=Math.round(depthAlt[r.k]*r.ct); } else { r.overwrite=0; r.final=r.baseFinal; } r.depth=r.ct?r.final/r.ct:0; r.sprinkled=r.final-r.minU; depthByKey[r.k]=r.depth; });
+        // size-level items
+        const items = []; const idealMap = {};
+        keys.forEach(k => { G[k].skus.forEach(s => {
+          const availBySize = inv && inv[s.sku] ? Object.fromEntries(Object.entries(inv[s.sku]).map(([sz,o])=>[sz,o.avail])) : null;
+          const cu = nsoCurve(s.scale, depthByKey[k]||0, { cap, force: !!forceSend[s.sku], availBySize });
+          const idealTot = cu.reduce((a,r)=>a+r.ideal,0);
+          const reservedSku = reservedUnits[s.sku] || 0;
+          const capTot = cu.reduce((a,r)=>a+r.val,0);
+          const net = Math.max(0, (cap?capTot:idealTot) - reservedSku);
+          // broken: any required size with no availability (+reserved) when inventory present
+          let broken = false; if (inv){ broken = cu.some(r => r.req && ((availBySize?(availBySize[r.size]||0):0) + 0) < 1); }
+          const st = statusOf(s.sku, broken);
+          idealMap[s.sku] = idealTot;
+          items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, st, forced: !!forceSend[s.sku] });
+        }); });
+        return { rows, items, idealMap, totalFinal: rows.reduce((a,r)=>a+r.final,0) };
+      }, [assortment, sim, simStores, weights, target, depthAlt, cap, forceSend, inv, tracker, allocDate, openDate, reservedUnits]);
+
+      // persist idealAllocation when it changes (guarded to avoid loops)
+      const lastIdeal = useRef('');
+      useEffect(() => { const j = JSON.stringify(eng.idealMap); if (j !== lastIdeal.current){ lastIdeal.current = j; onDataChange({ ...data, idealAllocation: eng.idealMap, allocationComplete: Object.keys(eng.idealMap).length>0 }); } }, [eng.idealMap]);
+
+      // ---------- filter helpers ----------
+      const distinct = (rows, accessor) => [...new Set(rows.map(r=>String(accessor(r))))].sort((a,b)=>(!isNaN(+a)&&!isNaN(+b))?(+a-+b):a.localeCompare(b));
+      const applyFS = (rows, cols, F, defSort) => {
+        let out = rows.filter(r => cols.every(c => { if (c.input||c.plain||!F.filters[c.id]||F.filters[c.id].length===0) return true; return F.filters[c.id].includes(String(c.val(r))); }));
+        if (F.sortCol){ const c=cols.find(x=>x.id===F.sortCol); if(c){ out=[...out].sort((a,b)=>{ let x=c.val(a),y=c.val(b); if(!isNaN(+x)&&!isNaN(+y)){x=+x;y=+y;} return (x<y?-1:x>y?1:0)*F.sortDir; }); } }
+        else if (defSort) out=[...out].sort(defSort);
+        return out;
+      };
+      const openPop = (table, col, e) => { const r=e.currentTarget.getBoundingClientRect(); setPop({ table, col, x:Math.min(r.left,window.innerWidth-250), y:r.bottom+4 }); };
+
+      const fmt = (n) => (n==null||n==='')?'\u2014':Number(Math.round(n)).toLocaleString();
+      const STATUS_STYLE = { 'READY':'#d1fae5|#047857','On time for Drop':'#e0f2fe|#0369a1','On time for Opening':'#e0e7ff|#4338ca','Arriving after Open':'#fef3c7|#92400e','Broken, no Replen':'#fee2e2|#b91c1c' };
+      const stBadge = (st) => { const [bg,fg]=(STATUS_STYLE[st]||'#f3f4f6|#374151').split('|'); return { backgroundColor:bg, color:fg }; };
+
+      // column defs
+      const L1COLS = [
+        {id:'Division',al:'left',val:r=>r.grp.div,cat:1},{id:'Category',al:'left',val:r=>r.grp.cat,cat:1},{id:'Sub-Category',al:'left',val:r=>r.grp.sub,cat:1},
+        {id:'SKUs',al:'center',val:r=>r.ct},{id:'Scale',al:'center',val:r=>{const set=[...new Set(r.grp.skus.map(s=>s.scale))];return set.length===1?set[0]:'mixed';},cat:1},
+        {id:'Demand %',al:'right',val:r=>(r.demand*100).toFixed(1)},{id:'Raw U',al:'right',val:r=>Math.round(r.raw)},{id:'Min U',al:'right',val:r=>r.minU},{id:'Max U',al:'right',val:r=>r.maxU},
+        {id:'Sprinkled',al:'right',val:r=>r.sprinkled},{id:'Final U',al:'right',val:r=>r.final},{id:'Depth Alt',al:'center',input:1},{id:'Depth',al:'right',val:r=>r.depth.toFixed(1)},{id:'% TTL',al:'right',val:r=>target?((r.final/target*100).toFixed(0)):'0'}
+      ];
+      const FZ = [['Division',90],['Category',120],['Sub-Category',130],['SKU',130],['Style Description',210],['Color Description',160]];
+      const FZMAP = {}; { let l=0; FZ.forEach(([id,w])=>{ FZMAP[id]={left:l,w}; l+=w; }); }
+      const L2COLS = [
+        {id:'Division',al:'left',val:i=>i.s.div,cat:1,fz:1},{id:'Category',al:'left',val:i=>i.s.cat,cat:1,fz:1},{id:'Sub-Category',al:'left',val:i=>i.s.sub,cat:1,fz:1},
+        {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},
+        {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},{id:'Status',al:'center',val:i=>i.st,cat:1},{id:'Sizes',al:'left',plain:1},{id:'Net U',al:'right',val:i=>i.net}
+      ];
+      L2COLS.forEach(c => { if (FZMAP[c.id]){ c.left=FZMAP[c.id].left; c.w=FZMAP[c.id].w; } });
+
+      const headerCell = (table, c, F) => {
+        const filt = F.filters[c.id] && F.filters[c.id].length>0;
+        const active = filt || F.sortCol===c.id;
+        const caret = F.sortCol===c.id ? (F.sortDir>0?'\u25B2':'\u25BC') : '';
+        const sty = {};
+        if (table==='L2'){ sty.position='sticky'; sty.top=0; sty.background='#f9fafb'; sty.zIndex = c.fz?33:22; if(c.fz){ sty.left=c.left; sty.minWidth=c.w; sty.width=c.w; } }
+        const alCls = c.al==='right'?'text-right':c.al==='center'?'text-center':'text-left';
+        if (c.input||c.plain) return <th key={c.id} className={alCls+' px-2 py-2'} style={sty}>{c.id}</th>;
+        return <th key={c.id} className={alCls+' px-2 py-2 select-none'} style={sty}>
+          <button onClick={(e)=>openPop(table,c.id,e)} className={'inline-flex items-center gap-1 '+(active?'text-[#1C3554] font-bold':'hover:text-gray-700')}>
+            <span>{c.id}</span><span style={{fontSize:'9px'}}>{caret}</span><span style={{fontSize:'10px', color: filt?'#1C3554':'#cbd5e1'}}>{'\u25BE'}</span>
+          </button></th>;
+      };
+
+      const renderPop = () => {
+        if (!pop) return null;
+        const cols = pop.table==='L1'?L1COLS:L2COLS; const c = cols.find(x=>x.id===pop.col); if(!c) return null;
+        const F = pop.table==='L1'?l1F:l2F; const setF = pop.table==='L1'?setL1F:setL2F;
+        const allRows = pop.table==='L1'?eng.rows:eng.items;
+        const vals = c.cat ? distinct(allRows, c.val) : [];
+        const cur = F.filters[c.id] || null;
+        const close = ()=>setPop(null);
+        const setSort = (dir)=>{ setF({...F, sortCol:c.id, sortDir:dir}); close(); };
+        return <div style={{position:'fixed', left:pop.x, top:pop.y, zIndex:60, minWidth:210}} className="bg-white border border-gray-300 rounded-lg shadow-lg text-sm" onClick={e=>e.stopPropagation()}>
+          <div className="px-3 py-2 border-b flex gap-2 text-xs">
+            <button onClick={()=>setSort(1)} className="flex-1 border rounded px-2 py-1 hover:bg-gray-50">Sort {'\u2191'}</button>
+            <button onClick={()=>setSort(-1)} className="flex-1 border rounded px-2 py-1 hover:bg-gray-50">Sort {'\u2193'}</button>
+          </div>
+          {c.cat ? <PopChecklist vals={vals} cur={cur} onApply={(sel)=>{ const f={...F.filters}; if(!sel||sel.length===0||sel.length===vals.length) delete f[c.id]; else f[c.id]=sel; setF({...F, filters:f}); close(); }} onClear={()=>{ const f={...F.filters}; delete f[c.id]; setF({...F, filters:f}); close(); }} />
+            : <div className="px-3 py-2 text-xs text-gray-400">Numeric column \u2014 use sort.</div>}
+        </div>;
+      };
+
+      const l1rows = applyFS(eng.rows, L1COLS, l1F, (a,b)=> a.grp.div<b.grp.div?-1:a.grp.div>b.grp.div?1:b.final-a.final);
+      const l2items = applyFS(eng.items, L2COLS, l2F, (a,b)=> b.net-a.net);
+      const tFinal = eng.rows.reduce((a,r)=>a+r.final,0);
+      const tSkus = eng.rows.reduce((a,r)=>a+r.ct,0);
+      const tRaw = eng.rows.reduce((a,r)=>a+r.raw,0);
+      const tSpr = eng.rows.reduce((a,r)=>a+Math.max(0,r.sprinkled),0);
+
+      const upBtn = (label, detail, loaded, onFile) => (
+        <label className={'text-sm border rounded px-2 py-2 cursor-pointer block '+(loaded?'text-emerald-700 bg-emerald-50 border-emerald-200':'text-gray-600 hover:bg-gray-50')}>
+          {loaded ? '\u2713 '+label+' \u2014 '+detail : 'Upload '+label+'\u2026'}
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e)=>{ if(e.target.files[0]) onFile(e.target.files[0]); }} />
+        </label>
+      );
+
+      return (
+        <div onClick={()=>setPop(null)}>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-2xl font-bold text-gray-800">Step 5: Allocation</h2>
+            <div className="text-xs text-gray-500">{eng.items.length} SKUs \u00B7 feeds Depth Review</div>
+          </div>
+          <p className="text-sm text-gray-500 mb-5">Distribute the unit target across categories by comp demand, then build the size-level allocation. Final Units feed the Depth Review roll-up.</p>
+
+          {/* Uploads */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-3">
+            <div className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">Data Inputs</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {upBtn('42 Inventory', inv?Object.keys(inv).length+' SKUs':'', !!inv, onInv)}
+              {upBtn('42 Sim Doors', sim?simStores.join(' + '):'', !!sim, onSim)}
+              {upBtn('SKU Tracker', tracker&&Object.keys(tracker).length?Object.keys(tracker).length+' SKUs':'', !!(tracker&&Object.keys(tracker).length), onTracker)}
+              <div className="text-sm border rounded px-2 py-2 bg-gray-50 text-gray-600 flex items-center justify-between"><span>Size Scales: default (22)</span></div>
+            </div>
+            <div className="text-xs text-gray-400 mt-2">Reserved units are reused from the Depth Review upload ({Object.keys(reservedUnits).length} SKUs).</div>
+          </div>
+
+          {/* Controls */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4 grid grid-cols-2 md:grid-cols-4 gap-4 items-end">
+            <div><label className="block text-xs font-semibold text-gray-500 mb-1">Target Units</label>
+              <input type="number" value={target} onChange={e=>{const v=+e.target.value||0; setTarget(v); saveSettings({target:v});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
+            <div><label className="block text-xs font-semibold text-gray-500 mb-1">Alloc Date</label>
+              <input type="date" value={allocDate} onChange={e=>{setAllocDate(e.target.value); saveSettings({allocDate:e.target.value});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
+            <div><label className="block text-xs font-semibold text-gray-500 mb-1">Store Open Date</label>
+              <input type="date" value={openDate} onChange={e=>{setOpenDate(e.target.value); saveSettings({openDate:e.target.value});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
+            <div className="flex items-center gap-2">
+              <button onClick={()=>{const n=!cap; setCap(n); saveSettings({cap:n});}} className={'relative inline-flex h-6 w-11 items-center rounded-full transition '+(cap?'bg-[#C9B99A]':'bg-gray-300')}>
+                <span className={'inline-block h-4 w-4 transform rounded-full bg-white transition '+(cap?'translate-x-6':'translate-x-1')}></span></button>
+              <span className="text-xs text-gray-600">Cap by available inventory</span></div>
+          </div>
+          {simStores.length>0 && (
+            <div className="bg-white border border-gray-200 rounded-lg p-3 mb-5 flex flex-wrap gap-4 items-end">
+              <span className="text-xs font-semibold text-gray-500">Sim Door Weights:</span>
+              {simStores.map(st => (
+                <div key={st} className="flex items-center gap-1"><span className="text-xs text-gray-600">{st}</span>
+                  <input type="number" step="0.1" value={weights[st]!=null?weights[st]:''} onChange={e=>{const w={...weights,[st]:Number(e.target.value)||0}; setWeights(w); saveSettings({weights:w});}} className="w-16 border rounded px-1 py-0.5 text-sm" /></div>
+              ))}
+            </div>
+          )}
+
+          {/* LAYER 1 */}
+          <div className="mb-2 flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 1 \u00B7 Adjust to Target</h3><span className="text-xs text-gray-400">comp demand \u2192 raw units \u2192 min/max \u2192 sprinkle \u2192 depth</span></div>
+          <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto mb-8"><table className="w-full text-[15px]">
+            <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L1COLS.map(c=>headerCell('L1',c,l1F))}</tr></thead>
+            <tbody>{l1rows.map(r => (
+              <tr key={r.k} className="border-t">
+                <td className="px-3 py-2 text-gray-600">{r.grp.div}</td><td className="px-2 py-2 font-medium">{r.grp.cat}</td><td className="px-2 py-2 text-gray-600">{r.grp.sub}</td>
+                <td className="px-2 py-2 text-center">{r.ct}</td><td className="px-2 py-2 text-center"><span className="bg-gray-100 rounded px-2 py-0.5" style={{fontSize:'11px'}}>{[...new Set(r.grp.skus.map(s=>s.scale))].length===1?r.grp.skus[0].scale:'mixed'}</span></td>
+                <td className="px-2 py-2 text-right">{(r.demand*100).toFixed(1)}%</td><td className="px-2 py-2 text-right text-gray-500">{fmt(r.raw)}</td>
+                <td className="px-2 py-2 text-right text-gray-400">{fmt(r.minU)}</td><td className="px-2 py-2 text-right text-gray-400">{fmt(r.maxU)}</td>
+                <td className={'px-2 py-2 text-right '+(r.sprinkled>0?'text-emerald-600':'text-gray-400')}>{r.sprinkled>0?'+'+fmt(r.sprinkled):'\u2014'}</td>
+                <td className="px-2 py-2 text-right font-semibold">{fmt(r.final)}</td>
+                <td className="px-2 py-2 text-center"><input type="number" value={depthAlt[r.k]||''} placeholder={r.depth.toFixed(0)} onChange={e=>{const v=parseFloat(e.target.value); const d={...depthAlt}; if(v>0)d[r.k]=v; else delete d[r.k]; setDepthAlt(d); saveOverrides({depthAlt:d});}} className={'w-14 border rounded px-1 py-0.5 text-xs '+(depthAlt[r.k]?'border-amber-400 text-amber-700':'')} /></td>
+                <td className="px-2 py-2 text-right">{r.depth.toFixed(1)}</td><td className="px-3 py-2 text-right">{target?(r.final/target*100).toFixed(0):0}%</td>
+              </tr>
+            ))}</tbody>
+            <tfoot className="bg-gray-50 font-semibold border-t-2 border-gray-200"><tr>
+              <td className="px-3 py-2" colSpan={3}>Grand Total</td><td className="px-2 py-2 text-center">{fmt(tSkus)}</td><td></td>
+              <td className="px-2 py-2 text-right">100%</td><td className="px-2 py-2 text-right">{fmt(tRaw)}</td><td></td><td></td>
+              <td className="px-2 py-2 text-right">+{fmt(tSpr)}</td>
+              <td className="px-2 py-2 text-right">{fmt(tFinal)} <span className={'text-xs font-normal '+(tFinal===target?'text-emerald-600':'text-red-600')}>{tFinal===target?'= target':(tFinal>target?'+':'')+fmt(tFinal-target)}</span></td>
+              <td></td><td></td><td className="px-3 py-2 text-right">{target?Math.round(tFinal/target*100)+'%':'\u2014'}</td>
+            </tr></tfoot>
+          </table></div>
+
+          {/* LAYER 2 */}
+          <div className="mb-2 flex items-baseline justify-between">
+            <div className="flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 2 \u00B7 Size-Level Allocation</h3><span className="text-xs text-gray-400">click a header to sort/filter \u00B7 scale override \u00B7 force-send</span></div>
+            <span className="text-xs text-gray-400">{l2items.length} of {eng.items.length} SKUs</span>
+          </div>
+          <div className="bg-white border border-gray-200 rounded-lg mb-4" style={{maxHeight:'70vh', overflow:'auto'}}>
+            <table className="w-full text-[15px]" style={{borderCollapse:'separate', borderSpacing:0}}>
+              <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L2COLS.map(c=>headerCell('L2',c,l2F))}</tr></thead>
+              <tbody>{l2items.length===0 ? <tr><td colSpan={10} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
+                const fzStyle = (id) => ({ position:'sticky', left:FZMAP[id].left, minWidth:FZMAP[id].w, width:FZMAP[id].w, background:'#fff', zIndex:5, borderBottom:'1px solid #eef0f2' });
+                return (
+                <tr key={it.s.sku+idx} className="align-middle">
+                  <td className="px-2 py-2 text-gray-600 whitespace-nowrap" style={fzStyle('Division')}>{it.s.div}</td>
+                  <td className="px-2 py-2 whitespace-nowrap" style={fzStyle('Category')}>{it.s.cat}</td>
+                  <td className="px-2 py-2 text-gray-600 whitespace-nowrap" style={fzStyle('Sub-Category')}>{it.s.sub}</td>
+                  <td className="px-2 py-2 text-gray-500 whitespace-nowrap" style={fzStyle('SKU')}>{it.s.sku}</td>
+                  <td className="px-2 py-2 font-medium whitespace-nowrap" style={fzStyle('Style Description')}>{it.s.style}</td>
+                  <td className="px-2 py-2 text-gray-600 whitespace-nowrap" style={fzStyle('Color Description')}>{it.s.color}</td>
+                  <td className="px-2 py-2 text-center" style={{borderBottom:'1px solid #eef0f2'}}>
+                    <select value={it.s.scale} onChange={e=>{const o={...scaleOverride,[it.s.sku]:e.target.value}; setScaleOverride(o); saveOverrides({scaleOverride:o});}} className={'border rounded px-1 py-0.5 text-xs '+(scaleOverride[it.s.sku]?'border-amber-400 text-amber-700':'')}>
+                      {Object.keys(NSO_SCALES).map(n=> <option key={n} value={n}>{n}</option>)}
+                    </select></td>
+                  <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>
+                    <button onClick={()=>{const f={...forceSend}; if(f[it.s.sku])delete f[it.s.sku]; else f[it.s.sku]=true; setForceSend(f); saveOverrides({forceSend:f});}} className={'rounded px-1.5 py-0.5 border mr-1 '+(it.forced?'bg-amber-600 text-white border-amber-600':'text-gray-500')} style={{fontSize:'11px'}}>Force</button>
+                    <span className="rounded px-1.5 py-0.5" style={{fontSize:'11px', ...stBadge(it.st)}}>{it.st}</span></td>
+                  <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>(
+                    <td key={i} className="text-center px-2 py-1" style={{borderLeft:'1px solid #f1f5f9', background:r.req?'':'rgba(249,250,251,0.4)'}}>
+                      <div className="text-gray-400" style={{fontSize:'10px'}}>{r.size}</div>
+                      {r.flag!=='' ? <span className={r.flag==='X'?'text-red-600 font-bold':'text-gray-400 font-bold'}>{r.flag}</span> : <span>{cap?r.val:r.ideal}</span>}
+                    </td>))}</tr></tbody></table></td>
+                  <td className="px-3 py-2 text-right font-semibold" style={{borderBottom:'1px solid #eef0f2'}}>{it.net}</td>
+                </tr>);
+              })}</tbody>
+            </table>
+          </div>
+
+          <div className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded px-3 py-2 mb-6">{'\u21B3'} Final Units feed Step 6 \u00B7 Depth Review (replacing its manual ideal upload). Reserved units are netted from the existing reserved file.</div>
+
+          <div className="flex justify-between border-t pt-4">
+            <button onClick={()=>onPrev(4)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
+            <button onClick={()=>{ onDataChange({ ...data, allocSettings:{target,allocDate,openDate,weights,cap}, allocOverrides:{depthAlt,scaleOverride,forceSend}, idealAllocation: eng.idealMap, allocationComplete:true }); onNext(6); }} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Depth Review</button>
+          </div>
+          {renderPop()}
+        </div>
+      );
+    };
+
+    // checklist-style popover for filter values
+    const PopChecklist = ({ vals, cur, onApply, onClear }) => {
+      const [sel, setSel] = useState(cur ? [...cur] : [...vals]);
+      const [q, setQ] = useState('');
+      const shown = vals.filter(v => v.toLowerCase().includes(q.toLowerCase()));
+      const toggle = (v) => setSel(s => s.includes(v) ? s.filter(x=>x!==v) : [...s, v]);
+      return (
+        <div>
+          <div className="px-3 pt-2"><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search\u2026" className="w-full border rounded px-2 py-1 text-xs" /></div>
+          <div className="px-3 py-1 text-xs text-gray-400 flex justify-between"><button onClick={()=>setSel([...vals])} className="underline">All</button><button onClick={()=>setSel([])} className="underline">None</button></div>
+          <div className="overflow-auto py-1" style={{maxHeight:'14rem'}}>{shown.map(v => (
+            <label key={v} className="flex items-center gap-2 px-3 py-1 hover:bg-gray-50 cursor-pointer"><input type="checkbox" checked={sel.includes(v)} onChange={()=>toggle(v)} /><span className="truncate">{v||'(blank)'}</span></label>
+          ))}</div>
+          <div className="px-3 py-2 border-t flex gap-2 text-xs"><button onClick={onClear} className="flex-1 border rounded px-2 py-1 hover:bg-gray-50">Clear</button><button onClick={()=>onApply(sel)} className="flex-1 rounded px-2 py-1 bg-[#C9B99A] text-[#1C3554] font-semibold">Apply</button></div>
+        </div>
+      );
+    };
+
+    const Step6 = ({ onNext, onPrev, onDataChange, data }) => {
       const [depthTargets, setDepthTargets] = useState(data.skuTargets || {});
       const [depthNotes, setDepthNotes] = useState({});
       const [idealAllocation, setIdealAllocation] = useState(data.idealAllocation || {});
@@ -3571,23 +3361,14 @@
         const selectedGroups = data.selectedGroups || [];
         const addedSkus = data.addedSkus || [];
 
-        const normalizeTier = (s) => String(s || '')
-          .toLowerCase()
-          .replace(/\u00A0/g, ' ')
-          .replace(/\s+/g, ' ')
-          .replace(/\s*\+\s*/g, '+')
-          .trim();
-        const selectedGroupsNorm = new Set(selectedGroups.map(normalizeTier));
-
         const matched = (data.pstData || []).filter(row => {
           const dm = String(row.deliveryMonth || '').trim();
           const matchesDelivery = selectedDeliveries.length === 0 ||
             selectedDeliveries.includes(`${String(row.seasonCode||'').trim()}:${dm}`) ||
             selectedDeliveries.includes(dm);
-          const tierNorm = normalizeTier(row.storeTier);
           const matchesTier = selectedGroups.length === 0 ||
-            selectedGroupsNorm.has(tierNorm) ||
-            tierNorm === 'all stores';
+            selectedGroups.includes(row.storeTier) ||
+            row.storeTier === 'ALL STORES';
           return matchesDelivery && matchesTier;
         });
 
@@ -3735,7 +3516,7 @@
       return (
         <div className="space-y-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-bold text-gray-800">Step 5: Depth Review</h2>
+            <h2 className="text-2xl font-bold text-gray-800">Step 6: Depth Review</h2>
             <button onClick={handleExport} className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-semibold hover:bg-green-700">Export to Excel</button>
           </div>
 
@@ -3794,61 +3575,6 @@
                 >
                   Download Template
                 </button>
-                {dataLoaded && (
-                  <button
-                    onClick={() => {
-                      // Export the currently loaded allocation data, joined to SKU metadata
-                      // from the assortment so you can verify the upload took correctly.
-                      const bySku = new Map();
-                      filteredData.forEach(r => { if (r.sku && !bySku.has(r.sku)) bySku.set(r.sku, r); });
-
-                      // Combine all SKUs we have allocation data for, even if they aren't in
-                      // the current Step 4 view — that way nothing loaded is hidden from QA.
-                      const allSkus = new Set([
-                        ...Object.keys(idealAllocation),
-                        ...Object.keys(reservedUnits),
-                      ]);
-                      filteredData.forEach(r => { if (r.sku) allSkus.add(r.sku); });
-
-                      const rows = [...allSkus].sort().map(sku => {
-                        const r = bySku.get(sku) || {};
-                        const ideal = idealAllocation[sku];
-                        const reserved = reservedUnits[sku];
-                        const action = data.skuActions?.[sku] || (r.defaultAction || 'Keep');
-                        return {
-                          'SKU': sku,
-                          'Style Description': r.styleDescription || '',
-                          'Color Description': r.colorDescription || '',
-                          'Division': r.department || '',
-                          'Category': r.category || '',
-                          'Subcategory': r.subcategory || '',
-                          'Store Tier': r.storeTier || '',
-                          'Delivery': r.deliveryMonth || '',
-                          'Action': action,
-                          'Ideal Allocation': ideal != null ? ideal : '',
-                          'Reserved Units': reserved != null ? reserved : '',
-                          'Variance (Reserved − Ideal)': (ideal != null && reserved != null) ? (reserved - ideal) : '',
-                          'In Allocation File?': (ideal != null || reserved != null) ? 'Yes' : 'No',
-                          'In Assortment?': bySku.has(sku) ? 'Yes' : 'No',
-                        };
-                      });
-                      const ws = XLSX.utils.json_to_sheet(rows);
-                      ws['!cols'] = [
-                        { wch: 22 }, { wch: 32 }, { wch: 22 }, { wch: 14 }, { wch: 18 },
-                        { wch: 20 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 16 },
-                        { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 14 },
-                      ];
-                      const wb = XLSX.utils.book_new();
-                      XLSX.utils.book_append_sheet(wb, ws, 'Allocation Data');
-                      const storeName = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9]/g, '_');
-                      const ts = new Date().toISOString().slice(0, 10);
-                      XLSX.writeFile(wb, storeName + '_Allocation_Loaded_' + ts + '.xlsx');
-                    }}
-                    className="px-4 py-2 bg-white border border-green-600 text-green-700 rounded text-xs font-semibold hover:bg-green-50"
-                  >
-                    Export Loaded Data
-                  </button>
-                )}
                 <button
                   onClick={() => fileRef.current?.click()}
                   className={`px-4 py-2 rounded text-xs font-semibold ${dataLoaded ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
@@ -3966,13 +3692,13 @@
 
           <div className="flex justify-between pt-6 border-t border-gray-200">
             <button
-              onClick={() => onPrev(4)}
+              onClick={() => onPrev(5)}
               className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500"
             >
               Previous
             </button>
             <button
-              onClick={() => onNext(6)}
+              onClick={() => onNext(7)}
               className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700"
             >
               Next: The Checklist
@@ -4084,7 +3810,7 @@
     // STEP 6: THE CHECKLIST
     // ============================================
 
-    const Step6 = ({ onNext, onPrev, onDataChange, data }) => {
+    const Step7 = ({ onNext, onPrev, onDataChange, data }) => {
       const { rows, baseRows, customRows, parseDate, fmtDate, dateOverrides } = computeChecklistRows(data.proFormaData || {});
       const checklistComplete = data.proFormaData.checklistComplete || {};
       const checklistNotes = data.proFormaData.checklistNotes || {};
@@ -4293,8 +4019,8 @@
           </div>
 
           <div className="flex justify-between pt-6 border-t border-gray-200">
-            <button onClick={() => onPrev(5)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
-            <button onClick={() => onNext(7)} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Linesheet</button>
+            <button onClick={() => onPrev(6)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
+            <button onClick={() => onNext(8)} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Linesheet</button>
           </div>
         </div>
       );
@@ -4304,7 +4030,7 @@
     // STEP 7: LINESHEET
     // ============================================
 
-    const Step7 = ({ onPrev, onDataChange, data }) => {
+    const Step8 = ({ onPrev, onDataChange, data }) => {
       const fileInputRef = useRef(null);
       const [localPdfUrl, setLocalPdfUrl] = useState(null);
       const linesheetName = data.proFormaData?.linesheetFileName || '';
@@ -4463,7 +4189,7 @@
           )}
 
           <div className="flex justify-between pt-6 border-t border-gray-200">
-            <button onClick={() => onPrev(6)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
+            <button onClick={() => onPrev(7)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
           </div>
         </div>
       );
@@ -4480,11 +4206,6 @@
     const CACHE_KEY = 'faherty_nso_cache';
     const SESSION_KEY = 'faherty_nso_session';
     const ALLOWED_EMAIL_DOMAIN = 'fahertybrand.com';
-
-    // Store Matrix API (Apps Script) — feeds the "Sync from Store Matrix" button in Step 2.
-    const STORE_MATRIX_API_URL = 'https://script.google.com/a/macros/fahertybrand.com/s/AKfycby8Z67jCeRScKJRxQHJfxd_Hnzw6USsNbTnu0pA9xd5xAEVMV0fIorwaZe0AoCJa0PB/exec';
-    const MATRIX_CACHE_KEY = 'faherty_nso_matrix_cache_v2';
-    const MATRIX_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
     // ============================================
     // AUTH (Supabase magic link)
@@ -5557,6 +5278,7 @@
           const divisions = [...new Set(pst.map(r => r.department).filter(Boolean))];
           return divisions.length > 0 && divisions.every(d => signoffs[d] && signoffs[d].length > 0);
         }
+        if (step === 5) return !!appData.allocationComplete;
         return false;
       };
 
@@ -5594,9 +5316,10 @@
                 { num: 2, label: 'Tiering & Groups' },
                 { num: 3, label: 'Deliveries' },
                 { num: 4, label: 'Assortment Review' },
-                { num: 5, label: 'Depth Review' },
-                { num: 6, label: 'The Checklist' },
-                { num: 7, label: 'Linesheet' },
+                { num: 5, label: 'Allocation' },
+                { num: 6, label: 'Depth Review' },
+                { num: 7, label: 'The Checklist' },
+                { num: 8, label: 'Linesheet' },
               ].map(({ num, label }) => (
                 <button
                   key={num}
@@ -5659,14 +5382,15 @@
                 </div>
               </div>
             )}
-            <div className={`mx-auto ${currentStep === 4 || currentStep === 5 ? 'max-w-screen-2xl' : 'max-w-6xl'}`}>
+            <div className="max-w-6xl mx-auto">
               {currentStep === 1 && <Step1 onNext={handleNextWithSave} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 2 && <Step2 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 3 && <Step3 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 4 && <Step4 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 5 && <Step5 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
               {currentStep === 6 && <Step6 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
-              {currentStep === 7 && <Step7 onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
+              {currentStep === 7 && <Step7 onNext={handleNextWithSave} onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
+              {currentStep === 8 && <Step8 onPrev={handlePrev} onDataChange={handleDataChange} data={appData} />}
             </div>
           </div>
         </div>
