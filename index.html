@@ -1445,9 +1445,16 @@
             let matched = findStore(newStoreName); let src = 'new store (' + newStoreName + ')';
             if (!matched && simStoreName) { matched = findStore(simStoreName); src = 'Sim Store fallback (' + simStoreName + ')'; }
             const selGroups = matched ? (matrix[matched] || []) : (data.selectedGroups || []);
+            const appStoreTiers = {};
+            stores.forEach(function(s){ if (s && s.name) appStoreTiers[String(s.name).trim().toLowerCase()] = { mens: (s.tiers && s.tiers.mens) || '', womens: (s.tiers && s.tiers.womens) || '' }; });
+            const matchedObj = matched ? stores.find(function(s){ return String(s.name).trim() === matched; }) : null;
+            const newAssigned = { ...(data.assignedTiers || {}) };
+            if (matchedObj && matchedObj.tiers) { if (matchedObj.tiers.mens) newAssigned.mens = matchedObj.tiers.mens; if (matchedObj.tiers.womens) newAssigned.womens = matchedObj.tiers.womens; }
             onDataChange({ ...data,
               storeTieringData: { ...(data.storeTieringData || {}), storeMatrix: matrix, storeGroups: groups.length ? groups : ((data.storeTieringData || {}).storeGroups || []) },
               selectedGroups: selGroups,
+              assignedTiers: newAssigned,
+              appStoreTiers: appStoreTiers,
               storeMatrixApiUrl: url,
               storeMatrixMatch: matched ? { store: matched, source: src + ' - ' + smQuarter + ' ' + smYear } : (data.storeMatrixMatch || null),
               storeMatrixSync: { quarter: smQuarter, year: smYear, at: new Date().toISOString() },
@@ -1580,7 +1587,10 @@
                   ].map(div => {
                     // Lookup comp store tier from tiering data
                     const lookupTier = (storeName, divData) => {
-                      if (!storeName || !Array.isArray(divData) || divData.length === 0) return '—';
+                      if (!storeName) return '—';
+                      const _appT = (data.appStoreTiers || {})[String(storeName).trim().toLowerCase()];
+                      if (_appT && _appT[div.key]) return _appT[div.key];
+                      if (!Array.isArray(divData) || divData.length === 0) return '—';
                       const lower = storeName.toLowerCase();
                       const match = divData.find(r => {
                         let s = '';
