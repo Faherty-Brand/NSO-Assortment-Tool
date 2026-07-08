@@ -3306,9 +3306,13 @@
         const simK = (g) => g.div+'|'+g.cat+'|'+g.sub;
         const slsOf = (g) => { const m = sim ? (sim[simK(g)]||{}) : {}; let v=0; (simStores.length?simStores:Object.keys(m)).forEach(st=>{ v += (weights[st]!=null?weights[st]:1) * (m[st]||0); }); return v; };
         const gmm = (g) => { let mn=0,mx=0; g.skus.forEach(s=>{ const [a,b]=nsoSMM(s.scale); mn+=a; mx+=b; }); return [mn,mx]; };
-        const sls = keys.map(k=>slsOf(G[k])); const slsSum = sls.reduce((a,b)=>a+b,0) || 1;
-        const rows = keys.map((k,i) => { const g=G[k], ct=g.skus.length, [minU,maxU]=gmm(g), demand=sls[i]/slsSum, raw=demand*target;
-          return { k, grp:g, ct, minU, maxU, sls:sls[i], demand, raw, eligible:(raw>=minU), prop:minU }; });
+        const sls = keys.map(k=>slsOf(G[k])); const slsTotal = sls.reduce((a,b)=>a+b,0);
+        const noSignal = !(slsTotal > 0);
+        // Fallback: with no comp-sales signal, weight by SKU count so Target still drives units (even depth across groups)
+        const wt = keys.map((k,i)=> noSignal ? G[k].skus.length : sls[i]);
+        const wtSum = wt.reduce((a,b)=>a+b,0) || 1;
+        const rows = keys.map((k,i) => { const g=G[k], ct=g.skus.length, [minU,maxU]=gmm(g), demand=wt[i]/wtSum, raw=demand*target;
+          return { k, grp:g, ct, minU, maxU, sls:wt[i], demand, raw, eligible:(raw>=minU), prop:minU }; });
         // baseline sprinkle to target (ignores depthAlt)
         let remaining = target - rows.reduce((a,r)=>a+r.prop,0);
         for (let it=0; it<10 && remaining>0.5; it++){ const pool=rows.filter(r=>r.eligible&&r.prop<r.maxU); const ps=pool.reduce((a,r)=>a+r.sls,0); if(ps===0)break;
@@ -3335,7 +3339,7 @@
           idealMap[s.sku] = idealTot;
           items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, st, forced: !!forceSend[s.sku] });
         }); });
-        return { rows, items, idealMap, totalFinal: rows.reduce((a,r)=>a+r.final,0) };
+        return { rows, items, idealMap, totalFinal: rows.reduce((a,r)=>a+r.final,0), noSignal };
       }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits]);
 
       // persist idealAllocation when it changes (guarded to avoid loops)
@@ -3487,6 +3491,7 @@
             </div>
           )}
 
+          {eng.noSignal && <div className="mb-3 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded px-3 py-2">No comp-sales signal (42 Sim Doors not loaded) — distributing Target by SKU count so units still respond to the target. Upload 42 Sim Doors for demand-weighted allocation.</div>}
           {/* LAYER 1 */}
           <div className="mb-2 flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 1 · Adjust to Target</h3><span className="text-xs text-gray-400">comp demand → raw units → min/max → sprinkle → depth · click a row to drill in</span></div>
           <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto mb-8"><table className="w-full text-xs">
