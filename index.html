@@ -833,6 +833,17 @@
     const nsoCoreDepts = ['Mens','Womens','Kids'];
     const nsoNormDept = (d) => nsoCoreDepts.includes(d) ? d : 'Non Apparel';
     const nsoNormTier = (s) => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g,' ').replace(/\s*\+\s*/g,'+');
+    const nsoNormTierObj = (t) => {
+      const out = { mens:'', womens:'', kids:'', nonApparel:'' };
+      if (t && typeof t === 'object') Object.keys(t).forEach(function(k){
+        const kl = String(k).toLowerCase().replace(/[^a-z]/g,''); const v = t[k]; if (!v) return;
+        if (kl.indexOf('nonap') >= 0 || kl.indexOf('access') >= 0) out.nonApparel = v;
+        else if (kl.indexOf('kid') >= 0 || kl.indexOf('youth') >= 0) out.kids = v;
+        else if (kl.indexOf('women') >= 0) out.womens = v;
+        else if (kl.indexOf('men') >= 0) out.mens = v;
+      });
+      return out;
+    };
     const NSO_MATRIX_URL = 'https://script.google.com/a/macros/fahertybrand.com/s/AKfycby8Z67jCeRScKJRxQHJfxd_Hnzw6USsNbTnu0pA9xd5xAEVMV0fIorwaZe0AoCJa0PB/exec';
     const nsoSMM = (name) => { const a = NSO_SCALES[name]; return a ? [a.reduce((x,r)=>x+r[2],0), a.reduce((x,r)=>x+r[3],0)] : [0,0]; };
     // size curve: min-floor + greedy weighted-gap floaters (RunNSO step 2), with optional inventory cap
@@ -1446,10 +1457,10 @@
             if (!matched && simStoreName) { matched = findStore(simStoreName); src = 'Sim Store fallback (' + simStoreName + ')'; }
             const selGroups = matched ? (matrix[matched] || []) : (data.selectedGroups || []);
             const appStoreTiers = {};
-            stores.forEach(function(s){ if (s && s.name) appStoreTiers[String(s.name).trim().toLowerCase()] = { mens: (s.tiers && s.tiers.mens) || '', womens: (s.tiers && s.tiers.womens) || '' }; });
+            stores.forEach(function(s){ if (s && s.name) appStoreTiers[String(s.name).trim().toLowerCase()] = nsoNormTierObj(s.tiers); });
             const matchedObj = matched ? stores.find(function(s){ return String(s.name).trim() === matched; }) : null;
             const newAssigned = { ...(data.assignedTiers || {}) };
-            if (matchedObj && matchedObj.tiers) { if (matchedObj.tiers.mens) newAssigned.mens = matchedObj.tiers.mens; if (matchedObj.tiers.womens) newAssigned.womens = matchedObj.tiers.womens; }
+            if (matchedObj && matchedObj.tiers) { const _mt = nsoNormTierObj(matchedObj.tiers); ['mens','womens','kids','nonApparel'].forEach(function(dk){ if (_mt[dk]) newAssigned[dk] = _mt[dk]; }); }
             onDataChange({ ...data,
               storeTieringData: { ...(data.storeTieringData || {}), storeMatrix: matrix, storeGroups: groups.length ? groups : ((data.storeTieringData || {}).storeGroups || []) },
               selectedGroups: selGroups,
@@ -3172,7 +3183,7 @@
           items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, st, forced: !!forceSend[s.sku] });
         }); });
         return { rows, items, idealMap, totalFinal: rows.reduce((a,r)=>a+r.final,0) };
-      }, [assortment, sim, simStores, weights, target, depthAlt, cap, forceSend, inv, tracker, allocDate, openDate, reservedUnits]);
+      }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits]);
 
       // persist idealAllocation when it changes (guarded to avoid loops)
       const lastIdeal = useRef('');
@@ -3186,7 +3197,7 @@
         else if (defSort) out=[...out].sort(defSort);
         return out;
       };
-      const openPop = (table, col, e) => { const r=e.currentTarget.getBoundingClientRect(); setPop({ table, col, x:Math.min(r.left,window.innerWidth-250), y:r.bottom+4 }); };
+      const openPop = (table, col, e) => { e.stopPropagation(); const r=e.currentTarget.getBoundingClientRect(); setPop({ table, col, x:Math.min(r.left,window.innerWidth-250), y:r.bottom+4 }); };
 
       const fmt = (n) => (n==null||n==='')?'—':Number(Math.round(n)).toLocaleString();
       const STATUS_STYLE = { 'READY':'#d1fae5|#047857','On time for Drop':'#e0f2fe|#0369a1','On time for Opening':'#e0e7ff|#4338ca','Arriving after Open':'#fef3c7|#92400e','Broken, no Replen':'#fee2e2|#b91c1c' };
@@ -3231,14 +3242,14 @@
         const cur = F.filters[c.id] || null;
         const close = ()=>setPop(null);
         const setSort = (dir)=>{ setF({...F, sortCol:c.id, sortDir:dir}); close(); };
-        return <div style={{position:'fixed', left:pop.x, top:pop.y, zIndex:60, minWidth:210}} className="bg-white border border-gray-300 rounded-lg shadow-lg text-sm" onClick={e=>e.stopPropagation()}>
+        return <><div style={{position:'fixed', inset:0, zIndex:55}} onClick={close} /><div style={{position:'fixed', left:pop.x, top:pop.y, zIndex:60, minWidth:210}} className="bg-white border border-gray-300 rounded-lg shadow-lg text-sm" onClick={e=>e.stopPropagation()}>
           <div className="px-3 py-2 border-b flex gap-2 text-xs">
             <button onClick={()=>setSort(1)} className="flex-1 border rounded px-2 py-1 hover:bg-gray-50">Sort {'\u2191'}</button>
             <button onClick={()=>setSort(-1)} className="flex-1 border rounded px-2 py-1 hover:bg-gray-50">Sort {'\u2193'}</button>
           </div>
           {c.cat ? <PopChecklist vals={vals} cur={cur} onApply={(sel)=>{ const f={...F.filters}; if(!sel||sel.length===0||sel.length===vals.length) delete f[c.id]; else f[c.id]=sel; setF({...F, filters:f}); close(); }} onClear={()=>{ const f={...F.filters}; delete f[c.id]; setF({...F, filters:f}); close(); }} />
             : <div className="px-3 py-2 text-xs text-gray-400">Numeric column — use sort.</div>}
-        </div>;
+        </div></>;
       };
 
       const l1rows = applyFS(eng.rows, L1COLS, l1F, (a,b)=> a.grp.div<b.grp.div?-1:a.grp.div>b.grp.div?1:b.final-a.final);
@@ -3281,7 +3292,7 @@
       );
 
       return (
-        <div onClick={()=>setPop(null)}>
+        <div>
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-2xl font-bold text-gray-800">Step 5: Allocation</h2>
             <div className="text-xs text-gray-500">{eng.items.length} SKUs · feeds Depth Review</div>
@@ -4561,11 +4572,14 @@
 
       // Save full data to Supabase and WAIT for it
       try {
+        // Keep bulky Allocation uploads (42 Inv/Sim/Tracker) in memory only — never persist them.
+        const slim = { ...appData };
+        ['allocInv','allocSim','allocSimStores','allocTracker'].forEach(function(k){ delete slim[k]; });
         const res = await supaFetch('projects', {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates' },
           body: JSON.stringify({
-            id: projectId, store_name: storeName, status, updated_at: now, app_data: appData,
+            id: projectId, store_name: storeName, status, updated_at: now, app_data: slim,
           }),
         });
         if (!res.ok) {
