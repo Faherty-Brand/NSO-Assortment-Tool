@@ -883,7 +883,14 @@
       const [imu, setImu] = useState(pick('imu', 78));
       const [turn, setTurn] = useState(pick('turn', 3.5));
 
-      const save = (patch) => onDataChange({ ...data, densityPlanner: { sales, aur, gross, selling, anchorWos, imu, turn, ...patch } });
+      const save = (patch) => {
+        const merged = { sales, aur, gross, selling, anchorWos, imu, turn, ...patch };
+        const au = (+merged.aur > 0) ? (+merged.sales) / (+merged.aur) : NaN;
+        const wu = au / 52;
+        const rec = wu * (+merged.anchorWos);
+        merged.recUnits = isFinite(rec) ? Math.round(rec) : '';
+        onDataChange({ ...data, densityPlanner: merged });
+      };
       const pullProforma = () => { const s = num(pf.newStoreNetSales), g = num(pf.newStoreGrossSqft), se = num(pf.newStoreSellingSquareFeet); setSales(s); setGross(g); setSelling(se); save({ sales: s, gross: g, selling: se }); };
 
       const fmtInt = (n) => isFinite(n) ? Math.round(n).toLocaleString('en-US') : '—';
@@ -1302,6 +1309,8 @@
               </div>
             )}
 
+            <DensityPlanner data={data} onDataChange={onDataChange} />
+
             {/* Divisional % Contribution */}
             <div className="mt-8 bg-white rounded-lg shadow-md p-6">
               <h3 className="text-lg font-bold text-gray-800 mb-2">Divisional % Contribution</h3>
@@ -1416,8 +1425,6 @@
               </div>
             </div>
           </div>
-
-          <DensityPlanner data={data} onDataChange={onDataChange} />
 
           <div className="flex justify-between pt-8 border-t border-gray-200">
             <button disabled className="px-6 py-2 bg-gray-300 text-gray-600 rounded-md font-semibold cursor-not-allowed">
@@ -3151,7 +3158,8 @@
     // ===================== STEP 5: ALLOCATION =====================
     const Step5 = ({ onNext, onPrev, onDataChange, data }) => {
       const S = data.allocSettings || {};
-      const [target, setTarget] = useState(S.target != null ? S.target : 6000);
+      const densityTarget = Math.round((data.densityPlanner && +data.densityPlanner.recUnits) || 0);
+      const [target, setTarget] = useState(S.target != null ? S.target : (densityTarget > 0 ? densityTarget : 6000));
       const [allocDate, setAllocDate] = useState(S.allocDate || '');
       const [openDate, setOpenDate] = useState(S.openDate || '');
       const [weights, setWeights] = useState(S.weights || {});
@@ -3440,7 +3448,7 @@
 
           {/* Controls */}
           <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4 grid grid-cols-2 md:grid-cols-4 gap-4 items-end">
-            <div><label className="block text-xs font-semibold text-gray-500 mb-1">Target Units</label>
+            <div><label className="block text-xs font-semibold text-gray-500 mb-1">Target Units{densityTarget > 0 && <button onClick={()=>{ setTarget(densityTarget); saveSettings({target:densityTarget}); }} className="ml-2 text-[10px] font-normal text-[#1C3554] underline">from density ({densityTarget.toLocaleString()})</button>}</label>
               <input type="number" value={target} onChange={e=>{const v=+e.target.value||0; setTarget(v); saveSettings({target:v});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
             <div><label className="block text-xs font-semibold text-gray-500 mb-1">Alloc Date</label>
               <input type="date" value={allocDate} onChange={e=>{setAllocDate(e.target.value); saveSettings({allocDate:e.target.value});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
