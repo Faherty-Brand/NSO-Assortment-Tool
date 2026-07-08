@@ -868,6 +868,131 @@
       });
     };
 
+
+    // ===================== DENSITY PLANNER (Store Open Planner) =====================
+    const DensityPlanner = ({ data, onDataChange }) => {
+      const pf = data.proFormaData || {};
+      const num = (v) => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : 0; };
+      const dp = data.densityPlanner || {};
+      const pick = (k, d) => (dp[k] !== undefined && dp[k] !== '' && dp[k] !== null ? dp[k] : d);
+      const [sales, setSales] = useState(pick('sales', num(pf.newStoreNetSales)));
+      const [aur, setAur] = useState(pick('aur', 135));
+      const [gross, setGross] = useState(pick('gross', num(pf.newStoreGrossSqft)));
+      const [selling, setSelling] = useState(pick('selling', num(pf.newStoreSellingSquareFeet)));
+      const [anchorWos, setAnchorWos] = useState(pick('anchorWos', 14));
+      const [imu, setImu] = useState(pick('imu', 78));
+      const [turn, setTurn] = useState(pick('turn', 3.5));
+
+      const save = (patch) => onDataChange({ ...data, densityPlanner: { sales, aur, gross, selling, anchorWos, imu, turn, ...patch } });
+      const pullProforma = () => { const s = num(pf.newStoreNetSales), g = num(pf.newStoreGrossSqft), se = num(pf.newStoreSellingSquareFeet); setSales(s); setGross(g); setSelling(se); save({ sales: s, gross: g, selling: se }); };
+
+      const fmtInt = (n) => isFinite(n) ? Math.round(n).toLocaleString('en-US') : '—';
+      const fmtCur = (n) => isFinite(n) ? '$' + Math.round(n).toLocaleString('en-US') : '—';
+      const fmt2 = (n) => isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+
+      const annualUnits = aur > 0 ? sales / aur : NaN;
+      const unitDenSell = selling > 0 ? annualUnits / selling : NaN;
+      const unitDenGross = gross > 0 ? annualUnits / gross : NaN;
+      const salesDenSell = selling > 0 ? sales / selling : NaN;
+      const salesDenGross = gross > 0 ? sales / gross : NaN;
+      const ratio = gross > 0 ? selling / gross : NaN;
+      const wkSales = sales / 52;
+      const wkUnits = annualUnits / 52;
+      const aRetail = wkSales * anchorWos, aUnits = wkUnits * anchorWos, aCost = aRetail * (1 - imu / 100);
+
+      const wosSet = [...new Set([12, 14, 16, anchorWos])].filter(w => w > 0).sort((a, b) => a - b);
+      const turnSet = [...new Set([4.0, 3.5, 3.0, turn])].filter(t => t > 0).sort((a, b) => b - a);
+
+      const numInput = (val, setter, key, opts) => (
+        <input type="number" value={val} step={(opts && opts.step) || 1} onChange={(e) => { const v = e.target.value === '' ? '' : +e.target.value; setter(v); save({ [key]: v }); }}
+          className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm num" />
+      );
+      const Stat = ({ k, children, sub }) => (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wide text-gray-400 font-semibold">{k}</div>
+          <div className="text-base font-bold text-gray-800 num">{children}</div>
+          {sub && <div className="text-[11px] text-gray-400 num">{sub}</div>}
+        </div>
+      );
+
+      return (
+        <div className="bg-white rounded-lg shadow-md p-6 mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-lg font-bold text-gray-800">Density Planner</h3>
+              <p className="text-xs text-gray-500">Weeks-of-supply opening buy + density, cross-checked against target turn. Pre-filled from the proforma.</p>
+            </div>
+            <button onClick={pullProforma} className="px-3 py-1.5 bg-[#C9B99A] text-[#1C3554] rounded text-xs font-semibold hover:bg-[#B8A889] whitespace-nowrap">↻ Refill from proforma</button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Inputs */}
+            <div className="space-y-3">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Inputs</div>
+              <div><label className="block text-xs font-medium text-gray-600 mb-1">Annual Sales (planned)</label>{numInput(sales, setSales, 'sales', { step: 10000 })}</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">AUR ($)</label>{numInput(aur, setAur, 'aur', { step: 1 })}</div>
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Opening anchor (wks)</label>{numInput(anchorWos, setAnchorWos, 'anchorWos', { step: 1 })}</div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Gross Sqft</label>{numInput(gross, setGross, 'gross', { step: 10 })}</div>
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Selling Sqft</label>{numInput(selling, setSelling, 'selling', { step: 10 })}</div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">IMU (%)</label>{numInput(imu, setImu, 'imu', { step: 1 })}</div>
+                <div><label className="block text-xs font-medium text-gray-600 mb-1">Target turn (x)</label>{numInput(turn, setTurn, 'turn', { step: 0.1 })}</div>
+              </div>
+            </div>
+
+            {/* Outputs */}
+            <div className="lg:col-span-2 space-y-4">
+              <div className="bg-[#1C3554] text-white rounded-lg p-4">
+                <div className="text-[11px] uppercase tracking-wide text-white/60 font-semibold mb-2">Recommended open — {anchorWos} WOS</div>
+                <div className="grid grid-cols-3 gap-4">
+                  <div><div className="text-[10px] uppercase text-white/50">Retail</div><div className="text-xl font-bold num">{fmtCur(aRetail)}</div></div>
+                  <div><div className="text-[10px] uppercase text-white/50">Units</div><div className="text-xl font-bold num">{fmtInt(aUnits)}</div></div>
+                  <div><div className="text-[10px] uppercase text-white/50">Cost buy</div><div className="text-xl font-bold num">{fmtCur(aCost)}</div></div>
+                </div>
+                <div className="text-[11px] text-white/70 mt-2">After {Math.round(imu)}% IMU{isFinite(ratio) ? ' · sell-to-gross ' + Math.round(ratio * 100) + '%' : ''}.</div>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <Stat k="Annual Units">{fmtInt(annualUnits)}</Stat>
+                <Stat k="Unit Density" sub={fmt2(unitDenGross) + ' /gross'}>{fmt2(unitDenSell)}<span className="text-[11px] text-gray-400 font-normal"> /sell ft²</span></Stat>
+                <Stat k="Sales Density" sub={fmtCur(salesDenGross) + ' /gross'}>{fmtCur(salesDenSell)}<span className="text-[11px] text-gray-400 font-normal"> /sell</span></Stat>
+                <Stat k="Sell : Gross">{isFinite(ratio) ? Math.round(ratio * 100) + '%' : '—'}</Stat>
+                <Stat k="Weekly Sales">{fmtCur(wkSales)}</Stat>
+                <Stat k="Weekly Units">{fmtInt(wkUnits)}</Stat>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Opening Buy — Weeks of Supply</div>
+                  <table className="w-full text-sm"><thead className="text-xs text-gray-400"><tr><th className="text-left px-3 py-1">WOS</th><th className="text-right px-3 py-1">Units</th><th className="text-right px-3 py-1">Retail $</th></tr></thead>
+                    <tbody>{wosSet.map(w => { const isA = w === anchorWos; return (
+                      <tr key={w} className={'border-t ' + (isA ? 'bg-amber-50 font-semibold' : '')}>
+                        <td className="px-3 py-1">{w} wks{isA ? <span className="ml-1 text-[9px] bg-amber-600 text-white rounded px-1">anchor</span> : ''}</td>
+                        <td className="px-3 py-1 text-right num">{fmtInt(wkUnits * w)}</td>
+                        <td className="px-3 py-1 text-right num">{fmtCur(wkSales * w)}</td>
+                      </tr>); })}</tbody></table>
+                </div>
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Sanity Check — Turn</div>
+                  <table className="w-full text-sm"><thead className="text-xs text-gray-400"><tr><th className="text-left px-3 py-1">Turn</th><th className="text-right px-3 py-1">Avg Units</th><th className="text-right px-3 py-1">Avg $</th></tr></thead>
+                    <tbody>{turnSet.map(t => { const isT = t === turn; return (
+                      <tr key={t} className={'border-t ' + (isT ? 'bg-amber-50 font-semibold' : '')}>
+                        <td className="px-3 py-1">{t.toFixed(1)}x{isT ? <span className="ml-1 text-[9px] bg-amber-600 text-white rounded px-1">target</span> : ''}</td>
+                        <td className="px-3 py-1 text-right num">{fmtInt(annualUnits / t)}</td>
+                        <td className="px-3 py-1 text-right num">{fmtCur(sales / t)}</td>
+                      </tr>); })}</tbody></table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     const Step1 = ({ onNext, onDataChange, data }) => {
       const fileInputRef = useRef(null);
 
@@ -1291,6 +1416,8 @@
               </div>
             </div>
           </div>
+
+          <DensityPlanner data={data} onDataChange={onDataChange} />
 
           <div className="flex justify-between pt-8 border-t border-gray-200">
             <button disabled className="px-6 py-2 bg-gray-300 text-gray-600 rounded-md font-semibold cursor-not-allowed">
