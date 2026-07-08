@@ -922,6 +922,15 @@
         </div>
       );
 
+      useEffect(() => {
+        const au = (+aur > 0) ? (+sales) / (+aur) : NaN;
+        const rec = isFinite(au) ? Math.round((au / 52) * (+anchorWos)) : '';
+        const cur = data.densityPlanner || {};
+        const nextObj = { sales, aur, gross, selling, anchorWos, imu, turn, recUnits: rec };
+        const changed = ['sales','aur','gross','selling','anchorWos','imu','turn','recUnits'].some(k => cur[k] !== nextObj[k]);
+        if (changed) onDataChange({ ...data, densityPlanner: nextObj });
+      }, [sales, aur, gross, selling, anchorWos, imu, turn]);
+
       return (
         <div className="bg-white rounded-lg shadow-md p-6 mt-6">
           <div className="flex items-center justify-between mb-4">
@@ -3158,8 +3167,17 @@
     // ===================== STEP 5: ALLOCATION =====================
     const Step5 = ({ onNext, onPrev, onDataChange, data }) => {
       const S = data.allocSettings || {};
-      const densityTarget = Math.round((data.densityPlanner && +data.densityPlanner.recUnits) || 0);
-      const [target, setTarget] = useState(S.target != null ? S.target : (densityTarget > 0 ? densityTarget : 6000));
+      const _dpd = data.densityPlanner || {};
+      let densityTarget = Math.round(+_dpd.recUnits || 0);
+      if (!densityTarget) {
+        const _pf = data.proFormaData || {};
+        const _n = (v) => { const x = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return isFinite(x) ? x : 0; };
+        const _s = (+_dpd.sales) || _n(_pf.newStoreNetSales);
+        const _a = (+_dpd.aur) || 135;
+        const _w = (+_dpd.anchorWos) || 14;
+        if (_s > 0 && _a > 0) densityTarget = Math.round((_s / _a / 52) * _w);
+      }
+      const [target, setTarget] = useState((S.targetOverride && S.target != null) ? S.target : (densityTarget > 0 ? densityTarget : (S.target != null ? S.target : 6000)));
       const [allocDate, setAllocDate] = useState(S.allocDate || '');
       const [openDate, setOpenDate] = useState(S.openDate || '');
       const [weights, setWeights] = useState(S.weights || {});
@@ -3175,7 +3193,7 @@
       const [expCat, setExpCat] = useState({});
 
       const persist = (patch) => onDataChange({ ...data, ...patch });
-      const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, ...next } });
+      const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, targetOverride: (data.allocSettings && data.allocSettings.targetOverride) || false, ...next } });
       const saveOverrides = (next) => persist({ allocOverrides: { depthAlt, scaleOverride, forceSend, ...next } });
 
       // ---------- included assortment (mirrors Depth Review) ----------
@@ -3448,8 +3466,8 @@
 
           {/* Controls */}
           <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4 grid grid-cols-2 md:grid-cols-4 gap-4 items-end">
-            <div><label className="block text-xs font-semibold text-gray-500 mb-1">Target Units{densityTarget > 0 && <button onClick={()=>{ setTarget(densityTarget); saveSettings({target:densityTarget}); }} className="ml-2 text-[10px] font-normal text-[#1C3554] underline">from density ({densityTarget.toLocaleString()})</button>}</label>
-              <input type="number" value={target} onChange={e=>{const v=+e.target.value||0; setTarget(v); saveSettings({target:v});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
+            <div><label className="block text-xs font-semibold text-gray-500 mb-1">Target Units{densityTarget > 0 && <button onClick={()=>{ setTarget(densityTarget); saveSettings({target:densityTarget, targetOverride:false}); }} className="ml-2 text-[10px] font-normal text-[#1C3554] underline">from density ({densityTarget.toLocaleString()})</button>}</label>
+              <input type="number" value={target} onChange={e=>{const v=+e.target.value||0; setTarget(v); saveSettings({target:v, targetOverride:true});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
             <div><label className="block text-xs font-semibold text-gray-500 mb-1">Alloc Date</label>
               <input type="date" value={allocDate} onChange={e=>{setAllocDate(e.target.value); saveSettings({allocDate:e.target.value});}} className="w-full border rounded px-2 py-1 text-sm" /></div>
             <div><label className="block text-xs font-semibold text-gray-500 mb-1">Store Open Date</label>
@@ -3556,7 +3574,7 @@
 
           <div className="flex justify-between border-t pt-4">
             <button onClick={()=>onPrev(4)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
-            <button onClick={()=>{ onDataChange({ ...data, allocSettings:{target,allocDate,openDate,weights,cap}, allocOverrides:{depthAlt,scaleOverride,forceSend}, idealAllocation: eng.idealMap, allocationComplete:true }); onNext(6); }} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Depth Review</button>
+            <button onClick={()=>{ onDataChange({ ...data, allocSettings:{target,allocDate,openDate,weights,cap,targetOverride:(data.allocSettings&&data.allocSettings.targetOverride)||false}, allocOverrides:{depthAlt,scaleOverride,forceSend}, idealAllocation: eng.idealMap, allocationComplete:true }); onNext(6); }} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Depth Review</button>
           </div>
           {renderPop()}
         </div>
