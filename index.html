@@ -3191,6 +3191,7 @@
       const [pop, setPop] = useState(null); // {table,col,rect}
       const [expDiv, setExpDiv] = useState({});
       const [expCat, setExpCat] = useState({});
+      const [resFilter, setResFilter] = useState('all'); // all | reserved | free
 
       const persist = (patch) => onDataChange({ ...data, ...patch });
       const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, targetOverride: (data.allocSettings && data.allocSettings.targetOverride) || false, ...next } });
@@ -3268,6 +3269,14 @@
         const storeArr=[...stores]; const w={}; storeArr.forEach(s=>{ w[s] = weights[s]!=null?weights[s]:Number((1/storeArr.length).toFixed(2)); });
         setWeights(w); persist({ allocSim: map, allocSimStores: storeArr, allocSettings:{ target, allocDate, openDate, cap, weights:w } });
       });
+      const onReserved = (file) => parseSheet(file, (rows) => {
+        const { hi, find } = headerIndexer(rows);
+        const cS = find('sku','style-color','style color'), cR = find('reserved','reserve','quantity','qty');
+        if (cS < 0 || cR < 0) { alert('Reserved Units: need a SKU column and a Reserved (or Quantity) column.'); return; }
+        const map = {};
+        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const sku=String(r[cS]||'').trim(); if(!sku)continue; const v=parseInt(r[cR])||0; if(v) map[sku]=(map[sku]||0)+v; }
+        persist({ reservedUnits: map });
+      });
       const onTracker = (file) => parseSheet(file, (rows) => {
         const { hi, find } = headerIndexer(rows);
         const cS=find('sku','style-color'), cCS=find('cs oo','cs delivery'), cNS=find('ns oo','ns delivery'), cOO=find('next oo','oo date','on order','delivery date'), cF=find('force'), cSt=find('status');
@@ -3298,48 +3307,60 @@
 
       // ---------- engine ----------
       const eng = useMemo(() => {
-        // group by div>cat>sub
+        // ---- carve-out: reserved SKUs are locked to their reserved units and removed from the sprinkle ----
+        const resOf = (sku) => reservedUnits[sku] || 0;
+        // group by div>cat>sub, tracking free (unreserved) vs reserved SKUs
         const G = {};
         assortment.forEach(s => { const k=s.div+' › '+s.cat+' › '+s.sub;
-          if (!G[k]) G[k] = { div:s.div, cat:s.cat, sub:s.sub, skus:[] }; G[k].skus.push(s); });
+          if (!G[k]) G[k] = { div:s.div, cat:s.cat, sub:s.sub, skus:[], free:[], resSkus:[] };
+          G[k].skus.push(s);
+          if (resOf(s.sku) > 0) G[k].resSkus.push(s); else G[k].free.push(s); });
         const keys = Object.keys(G);
         const simK = (g) => g.div+'|'+g.cat+'|'+g.sub;
         const slsOf = (g) => { const m = sim ? (sim[simK(g)]||{}) : {}; let v=0; (simStores.length?simStores:Object.keys(m)).forEach(st=>{ v += (weights[st]!=null?weights[st]:1) * (m[st]||0); }); return v; };
-        const gmm = (g) => { let mn=0,mx=0; g.skus.forEach(s=>{ const [a,b]=nsoSMM(s.scale); mn+=a; mx+=b; }); return [mn,mx]; };
+        const gmm = (skus) => { let mn=0,mx=0; skus.forEach(s=>{ const [a,b]=nsoSMM(s.scale); mn+=a; mx+=b; }); return [mn,mx]; };
+        // reserved pool (only SKUs that survived into the assortment) and the distributable remainder
+        const reservedPool = assortment.reduce((a,s)=> a + resOf(s.sku), 0);
+        const distributable = Math.max(0, target - reservedPool);
         const sls = keys.map(k=>slsOf(G[k])); const slsTotal = sls.reduce((a,b)=>a+b,0);
         const noSignal = !(slsTotal > 0);
-        // Fallback: with no comp-sales signal, weight by SKU count so Target still drives units (even depth across groups)
-        const wt = keys.map((k,i)=> noSignal ? G[k].skus.length : sls[i]);
+        // demand weight per group (free-SKU count fallback when no comp signal)
+        const wt = keys.map((k,i)=> noSignal ? G[k].free.length : sls[i]);
         const wtSum = wt.reduce((a,b)=>a+b,0) || 1;
-        const rows = keys.map((k,i) => { const g=G[k], ct=g.skus.length, [minU,maxU]=gmm(g), demand=wt[i]/wtSum, raw=demand*target;
-          return { k, grp:g, ct, minU, maxU, sls:wt[i], demand, raw, eligible:(raw>=minU), prop:minU }; });
-        // baseline sprinkle to target (ignores depthAlt)
-        let remaining = target - rows.reduce((a,r)=>a+r.prop,0);
+        const rows = keys.map((k,i) => { const g=G[k], freeCt=g.free.length, ct=g.skus.length, [minU,maxU]=gmm(g.free),
+          resU=g.resSkus.reduce((a,s)=>a+resOf(s.sku),0), demand=wt[i]/wtSum, raw=demand*distributable;
+          return { k, grp:g, ct, freeCt, minU, maxU, resU, sls:wt[i], demand, raw, eligible:(freeCt>0 && raw>=minU), prop:(freeCt>0?minU:0) }; });
+        // baseline sprinkle to the DISTRIBUTABLE remainder (ignores depthAlt); groups with no free SKUs get nothing
+        let remaining = distributable - rows.reduce((a,r)=>a+r.prop,0);
         for (let it=0; it<10 && remaining>0.5; it++){ const pool=rows.filter(r=>r.eligible&&r.prop<r.maxU); const ps=pool.reduce((a,r)=>a+r.sls,0); if(ps===0)break;
-          pool.forEach(r=>{ const add=remaining*(r.sls/ps), hr=r.maxU-r.prop; r.prop+=Math.min(add,hr); }); remaining=target-rows.reduce((a,r)=>a+r.prop,0); }
+          pool.forEach(r=>{ const add=remaining*(r.sls/ps), hr=r.maxU-r.prop; r.prop+=Math.min(add,hr); }); remaining=distributable-rows.reduce((a,r)=>a+r.prop,0); }
         rows.forEach(r=>r.prop=Math.round(r.prop));
-        let diff = Math.round(rows.reduce((a,r)=>a+r.prop,0) - target);
+        let diff = Math.round(rows.reduce((a,r)=>a+r.prop,0) - distributable);
         while (diff>0){ let bv=1e9,bi=-1; rows.forEach((r,idx)=>{ const ab=r.prop-r.minU; if(r.eligible&&ab>0&&ab<bv){bv=ab;bi=idx;} }); if(bi<0)break; rows[bi].prop--; diff--; }
         while (diff<0){ let bh=0,bi=-1; rows.forEach((r,idx)=>{ const hr=r.maxU-r.prop; if(r.eligible&&hr>bh){bh=hr;bi=idx;} }); if(bi<0)break; rows[bi].prop++; diff++; }
-        // independent depth-alt override
+        // independent depth-alt override — depth applies to FREE SKUs only; Final = distributed + reserved (locked)
         const depthByKey = {};
-        rows.forEach(r => { r.baseFinal=r.prop; if (depthAlt[r.k]>0){ r.overwrite=1; r.final=Math.round(depthAlt[r.k]*r.ct); } else { r.overwrite=0; r.final=r.baseFinal; } r.depth=r.ct?r.final/r.ct:0; r.sprinkled=r.final-r.minU; depthByKey[r.k]=r.depth; });
+        rows.forEach(r => { r.baseDist=r.prop; if (depthAlt[r.k]>0){ r.overwrite=1; r.distributed=Math.round(depthAlt[r.k]*r.freeCt); } else { r.overwrite=0; r.distributed=r.baseDist; }
+          r.depth=r.freeCt?r.distributed/r.freeCt:0; r.sprinkled=r.distributed-r.minU; r.final=r.distributed + r.resU; depthByKey[r.k]=r.depth; });
         // size-level items
         const items = []; const idealMap = {};
         keys.forEach(k => { G[k].skus.forEach(s => {
           const availBySize = inv && inv[s.sku] ? Object.fromEntries(Object.entries(inv[s.sku]).map(([sz,o])=>[sz,o.avail])) : null;
-          const cu = nsoCurve(s.scale, depthByKey[k]||0, { cap, force: !!forceSend[s.sku], availBySize });
-          const idealTot = cu.reduce((a,r)=>a+r.ideal,0);
-          const reservedSku = reservedUnits[s.sku] || 0;
+          const reservedSku = resOf(s.sku);
+          const isReserved = reservedSku > 0;
+          // reserved SKUs are locked to reserved units (curve summed to reserved); free SKUs get the demand curve
+          const cu = nsoCurve(s.scale, isReserved ? reservedSku : (depthByKey[k]||0), { cap, force: !!forceSend[s.sku], availBySize });
+          const idealTot = isReserved ? 0 : cu.reduce((a,r)=>a+r.ideal,0);   // reserved carved out of Target Allocation
           const capTot = cu.reduce((a,r)=>a+r.val,0);
-          const net = Math.max(0, (cap?capTot:idealTot) - reservedSku);
+          const net = Math.max(0, (cap?capTot:idealTot) - reservedSku);       // units still to ship (ideal − reserved)
+          const finalU = isReserved ? reservedSku : idealTot;                 // canonical: reserved ? reserved : target
           // broken: any required size with no availability (+reserved) when inventory present
           let broken = false; if (inv){ broken = cu.some(r => r.req && ((availBySize?(availBySize[r.size]||0):0) + 0) < 1); }
           const st = statusOf(s.sku, broken);
           idealMap[s.sku] = idealTot;
-          items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, st, forced: !!forceSend[s.sku] });
+          items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, isReserved, final:finalU, st, forced: !!forceSend[s.sku] });
         }); });
-        return { rows, items, idealMap, totalFinal: rows.reduce((a,r)=>a+r.final,0), noSignal };
+        return { rows, items, idealMap, reservedPool, distributable, totalFinal: rows.reduce((a,r)=>a+r.final,0), noSignal };
       }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits]);
 
       // persist idealAllocation when it changes (guarded to avoid loops)
@@ -3372,7 +3393,9 @@
       const L2COLS = [
         {id:'Division',al:'left',val:i=>i.s.div,cat:1,fz:1},{id:'Category',al:'left',val:i=>i.s.cat,cat:1,fz:1},{id:'Sub-Category',al:'left',val:i=>i.s.sub,cat:1,fz:1},
         {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},
-        {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},{id:'Status',al:'center',val:i=>i.st,cat:1},{id:'Sizes',al:'left',plain:1},{id:'Net U',al:'right',val:i=>i.net}
+        {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},{id:'Status',al:'center',val:i=>i.st,cat:1},
+        {id:'Reserved',al:'right',val:i=>i.reservedSku},{id:'Target U',al:'right',val:i=>i.ideal},{id:'Net U',al:'right',val:i=>i.net},{id:'Final U',al:'right',val:i=>i.final},
+        {id:'Sizes',al:'left',plain:1}
       ];
       L2COLS.forEach(c => { if (FZMAP[c.id]){ c.left=FZMAP[c.id].left; c.w=FZMAP[c.id].w; } });
 
@@ -3412,7 +3435,10 @@
       const l1rows = applyFS(eng.rows, L1COLS, l1F, (a,b)=> a.grp.div<b.grp.div?-1:a.grp.div>b.grp.div?1:b.final-a.final);
       const L2DORD={'Mens':0,'Womens':1,'Kids':2,'Non Apparel':3};
       const l2def=(a,b)=>{const A=a.s,B=b.s; const dr=(A.div in L2DORD?L2DORD[A.div]:9)-(B.div in L2DORD?L2DORD[B.div]:9); return dr || String(A.cat||'').localeCompare(String(B.cat||'')) || String(A.sub||'').localeCompare(String(B.sub||'')) || String(A.style||'').localeCompare(String(B.style||'')) || String(A.color||'').localeCompare(String(B.color||''));};
-      const l2items = applyFS(eng.items, L2COLS, l2F, l2def);
+      const l2base = applyFS(eng.items, L2COLS, l2F, l2def);
+      const l2items = resFilter==='all' ? l2base : l2base.filter(i => resFilter==='reserved' ? i.isReserved : !i.isReserved);
+      const resCount = eng.items.filter(i=>i.isReserved).length;
+      const freeCount = eng.items.length - resCount;
       const tFinal = eng.rows.reduce((a,r)=>a+r.final,0);
       const tSkus = eng.rows.reduce((a,r)=>a+r.ct,0);
       const tRaw = eng.rows.reduce((a,r)=>a+r.raw,0);
@@ -3441,6 +3467,35 @@
         <td className="px-3 py-2 text-right">{target?(o.final/target*100).toFixed(0):0}%</td>
       </>);
 
+      const handleAllocExport = () => {
+        // Sheet 1 — SKU detail (every SKU, with the Reserved flag so nothing is lost regardless of the on-screen filter)
+        const detail = eng.items.map(it => ({
+          Division: it.s.div, Category: it.s.cat, 'Sub-Category': it.s.sub,
+          SKU: it.s.sku, 'Style Description': it.s.style, 'Color Description': it.s.color,
+          Scale: it.s.scale, Status: it.st,
+          Reserved: it.isReserved ? 'Y' : '',
+          'Reserved Units': it.reservedSku || 0,
+          'Target Units': it.ideal || 0,
+          'Net Units': it.net || 0,
+          'Final Units': it.final || 0,
+        }));
+        // Sheet 2 — category summary
+        const catMap = {};
+        eng.items.forEach(it => { const k=it.s.div+'||'+it.s.cat;
+          const o=catMap[k]||(catMap[k]={Division:it.s.div,Category:it.s.cat,SKUs:0,'Reserved SKUs':0,'Target Units':0,'Reserved Units':0,'Net Units':0,'Final Units':0});
+          o.SKUs++; if(it.isReserved)o['Reserved SKUs']++; o['Target Units']+=it.ideal||0; o['Reserved Units']+=it.reservedSku||0; o['Net Units']+=it.net||0; o['Final Units']+=it.final||0; });
+        const summary = Object.values(catMap);
+        summary.push({ Division:'TOTAL', Category:'', SKUs: eng.items.length, 'Reserved SKUs': resCount,
+          'Target Units': eng.distributable, 'Reserved Units': eng.reservedPool,
+          'Net Units': eng.items.reduce((a,i)=>a+(i.net||0),0), 'Final Units': eng.totalFinal });
+        const wb = XLSX.utils.book_new();
+        const wsD = XLSX.utils.json_to_sheet(detail); wsD['!cols'] = [{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:12},{wch:16},{wch:9},{wch:13},{wch:12},{wch:10},{wch:11}];
+        XLSX.utils.book_append_sheet(wb, wsD, 'Allocation Detail');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), 'Category Summary');
+        const nm = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
+        XLSX.writeFile(wb, nm + '_Allocation.xlsx');
+      };
+
       const upBtn = (label, detail, loaded, onFile) => (
         <label className={'text-sm border rounded px-2 py-2 cursor-pointer block '+(loaded?'text-emerald-700 bg-emerald-50 border-emerald-200':'text-gray-600 hover:bg-gray-50')}>
           {loaded ? '✓ '+label+' — '+detail : 'Upload '+label+'\u2026'}
@@ -3452,20 +3507,24 @@
         <div>
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-2xl font-bold text-gray-800">Step 5: Allocation</h2>
-            <div className="text-xs text-gray-500">{eng.items.length} SKUs · feeds Depth Review</div>
+            <div className="flex items-center gap-3">
+              <div className="text-xs text-gray-500">{eng.items.length} SKUs · feeds Depth Review</div>
+              <button onClick={handleAllocExport} className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-semibold hover:bg-green-700">Export to Excel</button>
+            </div>
           </div>
           <p className="text-sm text-gray-500 mb-5">Distribute the unit target across categories by comp demand, then build the size-level allocation. Final Units feed the Depth Review roll-up.</p>
 
           {/* Uploads */}
           <div className="bg-white border border-gray-200 rounded-lg p-4 mb-3">
             <div className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">Data Inputs</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               {upBtn('42 Inventory', inv?Object.keys(inv).length+' SKUs':'', !!inv, onInv)}
               {upBtn('42 Sim Doors', sim?simStores.join(' + '):'', !!sim, onSim)}
               {upBtn('SKU Tracker', tracker&&Object.keys(tracker).length?Object.keys(tracker).length+' SKUs':'', !!(tracker&&Object.keys(tracker).length), onTracker)}
+              {upBtn('Reserved Units', Object.keys(reservedUnits).length?Object.keys(reservedUnits).length+' SKUs':'', Object.keys(reservedUnits).length>0, onReserved)}
               <div className="text-sm border rounded px-2 py-2 bg-gray-50 text-gray-600 flex items-center justify-between"><span>Size Scales: default (22)</span></div>
             </div>
-            <div className="text-xs text-gray-400 mt-2">Reserved units are reused from the Depth Review upload ({Object.keys(reservedUnits).length} SKUs).</div>
+            <div className="text-xs text-gray-400 mt-2">Reserved Units file: columns <b>SKU</b> + <b>Reserved</b> (or Quantity). Shared with the Depth Review upload — load it in either place. Reserved SKUs are locked to their reserved units and carved out of the target sprinkle.</div>
           </div>
 
           {/* Controls */}
@@ -3481,6 +3540,16 @@
                 <span className={'inline-block h-4 w-4 transform rounded-full bg-white transition '+(cap?'translate-x-6':'translate-x-1')}></span></button>
               <span className="text-xs text-gray-600">Cap by available inventory</span></div>
           </div>
+          {eng.reservedPool > 0 && (
+            <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-4 text-xs text-slate-700 flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-500 uppercase tracking-wide text-[10px] mr-1">Carve-out</span>
+              <span>Target <b className="tabular-nums">{fmt(target)}</b></span>
+              <span className="text-slate-400">=</span>
+              <span className="text-teal-700">Reserved (locked) <b className="tabular-nums">{fmt(eng.reservedPool)}</b> · {resCount} SKUs</span>
+              <span className="text-slate-400">+</span>
+              <span className="text-indigo-700">Distributable <b className="tabular-nums">{fmt(eng.distributable)}</b> · {freeCount} SKUs</span>
+            </div>
+          )}
           {simStores.length>0 && (
             <div className="bg-white border border-gray-200 rounded-lg p-3 mb-5 flex flex-wrap gap-4 items-end">
               <span className="text-xs font-semibold text-gray-500">Sim Door Weights:</span>
@@ -3540,14 +3609,21 @@
           </table></div>
 
           {/* LAYER 2 */}
-          <div className="mb-2 flex items-baseline justify-between">
+          <div className="mb-2 flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 2 · Size-Level Allocation</h3><span className="text-xs text-gray-400">click a header to sort/filter · scale override · force-send</span></div>
-            <span className="text-xs text-gray-400">{l2items.length} of {eng.items.length} SKUs</span>
+            <div className="flex items-center gap-3">
+              <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden text-xs">
+                <button onClick={()=>setResFilter('all')} className={'px-3 py-1.5 '+(resFilter==='all'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>All <span className="opacity-70">{eng.items.length}</span></button>
+                <button onClick={()=>setResFilter('reserved')} className={'px-3 py-1.5 border-l '+(resFilter==='reserved'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>Reserved <span className="opacity-70">{resCount}</span></button>
+                <button onClick={()=>setResFilter('free')} className={'px-3 py-1.5 border-l '+(resFilter==='free'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>Not reserved <span className="opacity-70">{freeCount}</span></button>
+              </div>
+              <span className="text-xs text-gray-400">{l2items.length} shown</span>
+            </div>
           </div>
           <div className="bg-white border border-gray-200 rounded-lg mb-4" style={{maxHeight:'70vh', overflow:'auto'}}>
             <table className="w-full text-xs" style={{borderCollapse:'separate', borderSpacing:0}}>
               <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L2COLS.map(c=>headerCell('L2',c,l2F))}</tr></thead>
-              <tbody>{l2items.length===0 ? <tr><td colSpan={10} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
+              <tbody>{l2items.length===0 ? <tr><td colSpan={13} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
                 const fzStyle = (id) => ({ position:'sticky', left:FZMAP[id].left, minWidth:FZMAP[id].w, width:FZMAP[id].w, maxWidth:FZMAP[id].w, overflow:'hidden', textOverflow:'ellipsis', background:'#fff', zIndex:5, borderBottom:'1px solid #eef0f2' });
                 return (
                 <tr key={it.s.sku+idx} className="align-middle">
@@ -3564,18 +3640,21 @@
                   <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>
                     <button onClick={()=>{const f={...forceSend}; if(f[it.s.sku])delete f[it.s.sku]; else f[it.s.sku]=true; setForceSend(f); saveOverrides({forceSend:f});}} className={'rounded px-1.5 py-0.5 border mr-1 '+(it.forced?'bg-amber-600 text-white border-amber-600':'text-gray-500')} style={{fontSize:'11px'}}>Force</button>
                     <span className="rounded px-1.5 py-0.5" style={{fontSize:'11px', ...stBadge(it.st)}}>{it.st}</span></td>
+                  <td className="px-3 py-2 text-right" style={{borderBottom:'1px solid #eef0f2'}}>{it.reservedSku>0 ? <span className="inline-block rounded-full bg-teal-600 text-white px-2 py-0.5" style={{fontSize:'10px',fontWeight:600}}>{fmt(it.reservedSku)}</span> : <span className="text-gray-300">—</span>}</td>
+                  <td className="px-3 py-2 text-right text-gray-500" style={{borderBottom:'1px solid #eef0f2'}}>{it.isReserved ? <span className="text-gray-300">—</span> : fmt(it.ideal)}</td>
+                  <td className="px-3 py-2 text-right text-gray-500" style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.net)}</td>
+                  <td className={'px-3 py-2 text-right font-semibold bg-indigo-50 '+(it.isReserved?'text-teal-700':'text-indigo-700')} style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.final)}</td>
                   <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>(
                     <td key={i} className="text-center px-1 py-0.5" style={{borderLeft:'1px solid #f1f5f9', background:r.req?'':'rgba(249,250,251,0.4)', minWidth:26}}>
                       <div className="text-gray-400" style={{fontSize:'10px'}}>{r.size}</div>
                       {r.flag!=='' ? <span className={r.flag==='X'?'text-red-600 font-bold':'text-gray-400 font-bold'}>{r.flag}</span> : <span>{cap?r.val:r.ideal}</span>}
                     </td>))}</tr></tbody></table></td>
-                  <td className="px-3 py-2 text-right font-semibold" style={{borderBottom:'1px solid #eef0f2'}}>{it.net}</td>
                 </tr>);
               })}</tbody>
             </table>
           </div>
 
-          <div className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded px-3 py-2 mb-6">{'↳'} Final Units feed Step 6 · Depth Review (replacing its manual ideal upload). Reserved units are netted from the existing reserved file.</div>
+          <div className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded px-3 py-2 mb-6">{'↳'} Final U (reserved SKUs = reserved units, everything else = target) feeds Step 6 · Depth Review, so the two tabs tie out. Net U is units still to ship (target − reserved).</div>
 
           <div className="flex justify-between border-t pt-4">
             <button onClick={()=>onPrev(4)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
@@ -3715,20 +3794,23 @@
           seenSkus.add(row.sku);
           const dept = normalizeDept(row.department || 'Other');
           const cat = row.category || 'Other';
-          if (!deptMap[dept]) deptMap[dept] = { skus: 0, idealUnits: 0, idealSkus: 0, reservedUnits: 0, reservedSkus: 0, cats: {} };
-          if (!deptMap[dept].cats[cat]) deptMap[dept].cats[cat] = { skus: 0, idealUnits: 0, idealSkus: 0, reservedUnits: 0, reservedSkus: 0 };
+          if (!deptMap[dept]) deptMap[dept] = { skus: 0, idealUnits: 0, idealSkus: 0, reservedUnits: 0, reservedSkus: 0, finalUnits: 0, finalSkus: 0, cats: {} };
+          if (!deptMap[dept].cats[cat]) deptMap[dept].cats[cat] = { skus: 0, idealUnits: 0, idealSkus: 0, reservedUnits: 0, reservedSkus: 0, finalUnits: 0, finalSkus: 0 };
           deptMap[dept].skus++;
           deptMap[dept].cats[cat].skus++;
           const iu = idealAllocation[row.sku] || 0;
           const ru = reservedUnits[row.sku] || 0;
+          const fu = ru > 0 ? ru : iu;   // canonical Final Units: reserved ? reserved : target
           if (iu > 0) { deptMap[dept].idealUnits += iu; deptMap[dept].idealSkus++; deptMap[dept].cats[cat].idealUnits += iu; deptMap[dept].cats[cat].idealSkus++; }
           if (ru > 0) { deptMap[dept].reservedUnits += ru; deptMap[dept].reservedSkus++; deptMap[dept].cats[cat].reservedUnits += ru; deptMap[dept].cats[cat].reservedSkus++; }
+          if (fu > 0) { deptMap[dept].finalUnits += fu; deptMap[dept].finalSkus++; deptMap[dept].cats[cat].finalUnits += fu; deptMap[dept].cats[cat].finalSkus++; }
         });
 
-        let totalSkus = 0, totalIdealUnits = 0, totalIdealSkus = 0, totalReservedUnits = 0, totalReservedSkus = 0;
+        let totalSkus = 0, totalIdealUnits = 0, totalIdealSkus = 0, totalReservedUnits = 0, totalReservedSkus = 0, totalFinalUnits = 0, totalFinalSkus = 0;
         Object.values(deptMap).forEach(d => {
           totalSkus += d.skus; totalIdealUnits += d.idealUnits; totalIdealSkus += d.idealSkus;
           totalReservedUnits += d.reservedUnits; totalReservedSkus += d.reservedSkus;
+          totalFinalUnits += d.finalUnits; totalFinalSkus += d.finalSkus;
         });
 
         const orderedDepts = Object.keys(deptMap).sort((a, b) => {
@@ -3743,6 +3825,7 @@
             key: dept, label: dept.toUpperCase(), isDivision: true,
             skus: d.skus, idealUnits: d.idealUnits, idealSkus: d.idealSkus,
             reservedUnits: d.reservedUnits, reservedSkus: d.reservedSkus,
+            finalUnits: d.finalUnits, finalSkus: d.finalSkus,
             pctSku: totalSkus > 0 ? ((d.skus / totalSkus) * 100).toFixed(0) + '%' : '0%',
           });
           const cats = Object.keys(d.cats).sort();
@@ -3752,12 +3835,13 @@
               key: dept + '|' + cat, label: cat, isDivision: false, parentDept: dept,
               skus: c.skus, idealUnits: c.idealUnits, idealSkus: c.idealSkus,
               reservedUnits: c.reservedUnits, reservedSkus: c.reservedSkus,
+              finalUnits: c.finalUnits, finalSkus: c.finalSkus,
               pctSku: totalSkus > 0 ? ((c.skus / totalSkus) * 100).toFixed(0) + '%' : '0%',
             });
           });
         });
 
-        return { rows, totalSkus, totalIdealUnits, totalIdealSkus, totalReservedUnits, totalReservedSkus };
+        return { rows, totalSkus, totalIdealUnits, totalIdealSkus, totalReservedUnits, totalReservedSkus, totalFinalUnits, totalFinalSkus };
       }, [filteredData, data.skuActions, idealAllocation, reservedUnits]);
 
       // Sim store name for comparison column
@@ -3807,6 +3891,9 @@
           'Reserved Units': row.reservedUnits,
           'Reserved %TTL Units': depthRows.totalReservedUnits > 0 ? ((row.reservedUnits / depthRows.totalReservedUnits) * 100).toFixed(0) + '%' : '—',
           'Reserved Avg Depth': row.reservedSkus > 0 ? Math.round(row.reservedUnits / row.reservedSkus) : '—',
+          'Final SKUs': row.finalSkus,
+          'Final Units': row.finalUnits,
+          'Final Avg Depth': row.finalSkus > 0 ? Math.round(row.finalUnits / row.finalSkus) : '—',
           'Unit Variance': row.idealUnits > 0 ? row.reservedUnits - row.idealUnits : '—',
           '% Variance': row.idealUnits > 0 ? (((row.reservedUnits - row.idealUnits) / row.idealUnits) * 100).toFixed(0) + '%' : '—',
           Notes: depthNotes[row.key] || '',
@@ -3821,6 +3908,8 @@
           'Reserved SKUs': depthRows.totalReservedSkus, 'Reserved Units': depthRows.totalReservedUnits,
           'Reserved %TTL Units': '100%',
           'Reserved Avg Depth': depthRows.totalReservedSkus > 0 ? Math.round(depthRows.totalReservedUnits / depthRows.totalReservedSkus) : '—',
+          'Final SKUs': depthRows.totalFinalSkus, 'Final Units': depthRows.totalFinalUnits,
+          'Final Avg Depth': depthRows.totalFinalSkus > 0 ? Math.round(depthRows.totalFinalUnits / depthRows.totalFinalSkus) : '—',
           'Unit Variance': depthRows.totalIdealUnits > 0 ? depthRows.totalReservedUnits - depthRows.totalIdealUnits : '—',
           '% Variance': depthRows.totalIdealUnits > 0 ? (((depthRows.totalReservedUnits - depthRows.totalIdealUnits) / depthRows.totalIdealUnits) * 100).toFixed(0) + '%' : '—',
           Notes: '',
@@ -3914,6 +4003,7 @@
                     <th className="px-2 py-2 text-center font-bold bg-blue-800" colSpan={3}>PLAN</th>
                     <th className="px-2 py-2 text-center font-bold bg-indigo-700" colSpan={4}>TARGET ALLOCATION</th>
                     <th className="px-2 py-2 text-center font-bold bg-teal-700" colSpan={4}>RESERVED UNITS</th>
+                    <th className="px-2 py-2 text-center font-bold bg-emerald-700" colSpan={3}>FINAL UNITS</th>
                     <th className="px-2 py-2 text-center font-bold bg-orange-700" colSpan={2}>VARIANCE</th>
                     <th className="px-2 py-2 text-center font-bold bg-gray-600">NOTES</th>
                   </tr>
@@ -3930,6 +4020,9 @@
                     <th className="px-2 py-1.5 text-center bg-teal-50">Units</th>
                     <th className="px-2 py-1.5 text-center bg-teal-50">%TTL Units</th>
                     <th className="px-2 py-1.5 text-center bg-teal-50">Avg Depth</th>
+                    <th className="px-2 py-1.5 text-center bg-emerald-50">SKUs</th>
+                    <th className="px-2 py-1.5 text-center bg-emerald-50">Units</th>
+                    <th className="px-2 py-1.5 text-center bg-emerald-50">Avg Depth</th>
                     <th className="px-2 py-1.5 text-center bg-orange-50">Units</th>
                     <th className="px-2 py-1.5 text-center bg-orange-50">%</th>
                     <th className="px-2 py-1.5 text-center"></th>
@@ -3944,6 +4037,7 @@
                     const unitVar = row.idealUnits > 0 ? row.reservedUnits - row.idealUnits : null;
                     const pctVar = row.idealUnits > 0 ? (((row.reservedUnits - row.idealUnits) / row.idealUnits) * 100).toFixed(0) : null;
                     const displayReserved = dataLoaded ? row.reservedUnits : '—';
+                    const finalAvg = row.finalSkus > 0 ? Math.round(row.finalUnits / row.finalSkus) : '—';
 
                     return (
                       <tr key={row.key} className={`border-b border-gray-200 ${row.isDivision ? 'bg-blue-50 font-bold' : 'hover:bg-gray-50'}`}>
@@ -3965,6 +4059,9 @@
                         <td className={`px-2 py-1.5 text-center bg-teal-50 ${row.isDivision ? 'font-bold' : ''}`}>{displayReserved}</td>
                         <td className="px-2 py-1.5 text-center bg-teal-50">{pctReservedUnits}</td>
                         <td className="px-2 py-1.5 text-center bg-teal-50">{reservedAvg}</td>
+                        <td className={`px-2 py-1.5 text-center bg-emerald-50 ${row.isDivision ? 'font-bold' : ''}`}>{dataLoaded ? row.finalSkus : '—'}</td>
+                        <td className={`px-2 py-1.5 text-center bg-emerald-50 font-semibold ${row.isDivision ? 'font-bold' : ''}`}>{dataLoaded ? row.finalUnits : '—'}</td>
+                        <td className="px-2 py-1.5 text-center bg-emerald-50">{finalAvg}</td>
                         <td className={`px-2 py-1.5 text-center bg-orange-50 ${unitVar !== null ? (unitVar < 0 ? 'text-red-600 font-semibold' : unitVar > 0 ? 'text-green-600 font-semibold' : '') : ''}`}>
                           {unitVar !== null ? (unitVar > 0 ? '+' : '') + unitVar : '—'}
                         </td>
@@ -3991,6 +4088,9 @@
                     <td className="px-2 py-2 text-center">{dataLoaded ? depthRows.totalReservedUnits : '—'}</td>
                     <td className="px-2 py-2 text-center">{dataLoaded ? '100%' : '—'}</td>
                     <td className="px-2 py-2 text-center">{dataLoaded && depthRows.totalReservedSkus > 0 ? Math.round(depthRows.totalReservedUnits / depthRows.totalReservedSkus) : '—'}</td>
+                    <td className="px-2 py-2 text-center">{dataLoaded ? depthRows.totalFinalSkus : '—'}</td>
+                    <td className="px-2 py-2 text-center">{dataLoaded ? depthRows.totalFinalUnits : '—'}</td>
+                    <td className="px-2 py-2 text-center">{dataLoaded && depthRows.totalFinalSkus > 0 ? Math.round(depthRows.totalFinalUnits / depthRows.totalFinalSkus) : '—'}</td>
                     {(() => {
                       const tv = depthRows.totalIdealUnits > 0 ? depthRows.totalReservedUnits - depthRows.totalIdealUnits : null;
                       const tp = depthRows.totalIdealUnits > 0 ? (((depthRows.totalReservedUnits - depthRows.totalIdealUnits) / depthRows.totalIdealUnits) * 100).toFixed(0) : null;
