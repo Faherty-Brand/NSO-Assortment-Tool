@@ -845,16 +845,54 @@
       return out;
     };
     const NSO_MATRIX_URL = 'https://script.google.com/a/macros/fahertybrand.com/s/AKfycby8Z67jCeRScKJRxQHJfxd_Hnzw6USsNbTnu0pA9xd5xAEVMV0fIorwaZe0AoCJa0PB/exec';
-    const nsoSMM = (name) => { const a = NSO_SCALES[name]; return a ? [a.reduce((x,r)=>x+r[2],0), a.reduce((x,r)=>x+r[3],0)] : [0,0]; };
+    const nsoSMM = (name) => { const a = NSO_SCALES[name]; if (!a) return [0,0]; const mx = a.reduce((x,r)=>x+r[3],0); const mn = Math.min(a.length===1 ? 3 : Math.floor(a.length*1.5), mx); return [mn, mx]; };
+    // size ordering axis for the runs-small/large shift: waist for pants (32WX30L→32), the number for numeric scales, else alpha order
+    const NSO_ALPHA = ['XXS','XS','S','M','L','XL','XXL','XXXL'];
+    const nsoSizeRank = (label) => {
+      const l = String(label||'').trim();
+      const wm = /(\d+)\s*W/i.exec(l); if (wm) return parseInt(wm[1]);                 // waist (primary axis for pants)
+      const nm = /^\s*(\d+(?:\.\d+)?)\s*$/.exec(l); if (nm) return parseFloat(nm[1]);   // pure numeric (waist / shoe size)
+      const ai = NSO_ALPHA.indexOf(l.toUpperCase().split('/')[0]); if (ai>=0) return ai; // alpha order
+      return null;
+    };
+    // translate (shift) the size distribution along its size axis by `steps` distinct sizes (+ = larger, − = smaller).
+    // total weight is preserved; for waist×inseam the shift is along waist and the inseam split within a waist is kept.
+    const nsoShiftCurve = (s, pct, steps) => {
+      if (!steps) return pct;
+      const labels = s.map(r=>r[1]);
+      const ranks = labels.map(nsoSizeRank);
+      const distinct = [...new Set(ranks.filter(r=>r!=null))].sort((a,b)=>a-b);
+      if (distinct.length < 2) return pct;
+      const idxOfRank = {}; distinct.forEach((r,j)=>idxOfRank[r]=j);
+      const K = distinct.length;
+      const wRank = distinct.map(()=>0);
+      labels.forEach((l,i)=>{ const r=ranks[i]; if(r!=null) wRank[idxOfRank[r]] += pct[i]; });
+      const dst = wRank.map((_,j)=>{ let p=j-steps; p=Math.max(0,Math.min(K-1,p)); const lo=Math.floor(p),hi=Math.ceil(p),f=p-lo; return wRank[lo]*(1-f)+wRank[hi]*f; });
+      const tot = wRank.reduce((a,b)=>a+b,0), dt = dst.reduce((a,b)=>a+b,0)||1; const dstN = dst.map(x=>x*tot/dt);
+      const out = pct.slice();
+      distinct.forEach((r,j)=>{ const members=[]; let mtot=0; labels.forEach((l,i)=>{ if(ranks[i]===r){ members.push(i); mtot+=pct[i]; } });
+        members.forEach(i=>{ out[i] = dstN[j] * (mtot>0 ? pct[i]/mtot : 1/members.length); }); });
+      return out;
+    };
     // size curve: min-floor + greedy weighted-gap floaters (RunNSO step 2), with optional inventory cap
     const nsoCurve = (scaleName, depth, opts) => {
       const s = NSO_SCALES[scaleName]; if (!s) return [];
       opts = opts || {};
-      const n = s.length, mins = s.map(r=>r[2]), maxs = s.map(r=>r[3]);
-      const pct = s.map(r=>(r[2]+r[3])/2); const pctTot = pct.reduce((a,b)=>a+b,0)||1;
+      const shape = opts.shape || null;   // {sizeLabel: standardUnits} — the standard curve for this SKU's category
+      const shift = opts.shift || 0;      // runs-small/large: shift the curve along the size axis (− smaller, + larger)
+      const n = s.length;
+      // In shape mode the standard curve drives the distribution; sizes absent from the curve are not floored.
+      const inShape = (r) => shape && shape[r[1]] != null;
+      const mins = shape ? s.map(r=>inShape(r)?r[2]:0) : s.map(r=>r[2]);
+      let pct = shape ? s.map(r=>inShape(r)?Math.max(0,shape[r[1]]):0) : s.map(r=>(r[2]+r[3])/2);
+      // runs-small / runs-large: translate the curve along the size run (waist for pants), keeping the total
+      if (shift && n>1) pct = nsoShiftCurve(s, pct, shift);
+      const pctTot = pct.reduce((a,b)=>a+b,0)||1;
+      // relax the tight per-size max in shape mode so the standard curve can scale to depth instead of flattening
+      const maxs = shape ? s.map(()=>Math.max(1, Math.ceil(depth||0))) : s.map(r=>r[3]);
       let vals = mins.slice(); const sumMins = mins.reduce((a,b)=>a+b,0); const tInt = Math.round(depth||0);
       if (tInt > sumMins) { const ideal = pct.map(p=>depth*p/pctTot); let fl = tInt - sumMins;
-        while (fl-- > 0) { let best=-1e9, bi=-1; for (let i=0;i<n;i++){ if (vals[i]<maxs[i]){ const sc=(ideal[i]-vals[i])*(pct[i]/pctTot); if (sc>best){best=sc;bi=i;} } } if (bi<0) break; vals[bi]++; } }
+        while (fl-- > 0) { let best=-1e9, bi=-1; for (let i=0;i<n;i++){ if (vals[i]<maxs[i] && pct[i]>0){ const sc=(ideal[i]-vals[i])*(pct[i]/pctTot); if (sc>best){best=sc;bi=i;} } } if (bi<0) break; vals[bi]++; } }
       const availBySize = opts.availBySize || null; const force = opts.force;
       return s.map((r,i) => {
         const ideal = vals[i];
@@ -3182,10 +3220,14 @@
       const [openDate, setOpenDate] = useState(S.openDate || '');
       const [weights, setWeights] = useState(S.weights || {});
       const [cap, setCap] = useState(!!S.cap);
+      const [sizeBias, setSizeBias] = useState(S.sizeBias || {}); // {Mens:'small'|'neutral'|'large', ...}
+      const [editCat, setEditCat] = useState('');   // selected category (normalized key) in the curve editor
+      const [showEditor, setShowEditor] = useState(false);
       const ov = data.allocOverrides || {};
       const [depthAlt, setDepthAlt] = useState(ov.depthAlt || {});
       const [scaleOverride, setScaleOverride] = useState(ov.scaleOverride || {});
       const [forceSend, setForceSend] = useState(ov.forceSend || {});
+      const [skuNotes, setSkuNotes] = useState(ov.skuNotes || {});
       const [l1F, setL1F] = useState({ filters:{}, sortCol:null, sortDir:1 });
       const [l2F, setL2F] = useState({ filters:{}, sortCol:null, sortDir:1 });
       const [pop, setPop] = useState(null); // {table,col,rect}
@@ -3194,8 +3236,10 @@
       const [resFilter, setResFilter] = useState('all'); // all | reserved | free
 
       const persist = (patch) => onDataChange({ ...data, ...patch });
-      const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, targetOverride: (data.allocSettings && data.allocSettings.targetOverride) || false, ...next } });
-      const saveOverrides = (next) => persist({ allocOverrides: { depthAlt, scaleOverride, forceSend, ...next } });
+      const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, sizeBias, targetOverride: (data.allocSettings && data.allocSettings.targetOverride) || false, ...next } });
+      const saveOverrides = (next) => persist({ allocOverrides: { depthAlt, scaleOverride, forceSend, skuNotes, ...next } });
+      const biasToShift = (b) => b==='small' ? -0.5 : b==='large' ? 0.5 : 0;
+      const saveCurve = (nextOverrides) => persist({ curveOverrides: nextOverrides });
 
       // ---------- included assortment (mirrors Depth Review) ----------
       const assortment = useMemo(() => {
@@ -3229,6 +3273,8 @@
       const simStores = (data.allocSimStores || []);
       const tracker = data.allocTracker || {};  // {sku:{oo,force,status}}
       const reservedUnits = data.reservedUnits || {};
+      const stdCurves = data.stdCurves || null;   // {div|cat|sub: {scale: {size: units}}}
+      const curveOverrides = data.curveOverrides || {};   // in-app edits layered on top of the file, same shape
 
       // ---------- generic file parse ----------
       const parseSheet = (file, cb) => {
@@ -3287,6 +3333,22 @@
         if (Object.keys(map).length === 0) { alert('Reserved Units: file parsed, but no rows had a positive reserve quantity. Check the Reserve Qty column.'); return; }
         persist({ reservedUnits: map });
       });
+      const onSizeCurves = (file) => parseSheet(file, (rows) => {
+        // Standard Size Curves file: header block of Division / Category / Sub rows above a 'Scale, #' row;
+        // columns 0-6 are scale fields (Scale#, Size ID, Size Scale, Size, Min, Max, Required), columns 7+ are per-category curves.
+        let hr = rows.findIndex(r => Array.isArray(r) && String(r[0]||'').trim() === 'Scale, #');
+        if (hr < 0) hr = rows.findIndex(r => Array.isArray(r) && String(r[2]||'').trim().toLowerCase() === 'size scale');
+        if (hr < 2) { alert('Standard Size Curves: could not find the header row (expected a "Scale, #" / "Size Scale" row with Division/Category/Sub above it).'); return; }
+        const divR = rows[hr-3]||[], catR = rows[hr-2]||[], subR = rows[hr-1]||[];
+        const catKeyOf = (c) => { const d = String(divR[c]||'').trim(), ct = String(catR[c]||'').trim(), sb = String(subR[c]||'').trim(); if(!d||!ct) return null; return nsoNormDept(d)+'|'+ct+'|'+sb; };
+        const cols = {};
+        for (let c=7;c<(rows[hr]||[]).length;c++){ const k=catKeyOf(c); if(k) cols[c]=k; }
+        const std = {};
+        for (let i=hr+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const scale=String(r[2]||'').trim(); const size=String(r[3]||'').trim(); if(!scale||!size)continue;
+          for (const c in cols){ const v=Number(r[c]); if(isFinite(v)&&v>0){ const key=cols[c]; (std[key]=std[key]||{}); (std[key][scale]=std[key][scale]||{}); std[key][scale][size]=v; } } }
+        if (Object.keys(std).length === 0) { alert('Standard Size Curves: file parsed, but no category curves were found.'); return; }
+        persist({ stdCurves: std });
+      });
       const onTracker = (file) => parseSheet(file, (rows) => {
         const { hi, find } = headerIndexer(rows);
         const cS=find('sku','style-color'), cCS=find('cs oo','cs delivery'), cNS=find('ns oo','ns delivery'), cOO=find('next oo','oo date','on order','delivery date'), cF=find('force'), cSt=find('status');
@@ -3315,63 +3377,94 @@
         return 'Arriving after Open';
       };
 
+      // ---------- standard size curves lookup (file base + in-app overrides, normalized so PST naming still matches) ----------
+      const stdLookup = useMemo(() => {
+        const nz = (s)=>String(s||'').toLowerCase().replace(/\s+/g,' ').trim();
+        const byKey = {}, byCat = {};
+        const put = (k, curves) => { const p=k.split('|'); const d=p[0]||'',c=p[1]||'',sb=p[2]||''; const nk=nz(d)+'|'+nz(c)+'|'+nz(sb); const ck=nz(d)+'|'+nz(c);
+          byKey[nk] = Object.assign({}, byKey[nk]||{}, curves);   // later puts (overrides) replace matching scales
+          byCat[ck] = Object.assign({}, byCat[ck]||{}, curves); };
+        if (stdCurves) Object.keys(stdCurves).forEach(k => put(k, stdCurves[k]));
+        Object.keys(curveOverrides).forEach(k => put(k, curveOverrides[k]));   // overrides win
+        return (stdCurves || Object.keys(curveOverrides).length) ? { nz, byKey, byCat } : null;
+      }, [stdCurves, curveOverrides]);
+      const shapeFor = (div, cat, sub, scale) => {
+        if (!stdLookup) return null;
+        const { nz, byKey, byCat } = stdLookup;
+        const exact = byKey[nz(div)+'|'+nz(cat)+'|'+nz(sub)];
+        if (exact && exact[scale]) return exact[scale];
+        const cm = byCat[nz(div)+'|'+nz(cat)];   // fallback: same div|cat, any sub carrying this scale
+        if (cm && cm[scale]) return cm[scale];
+        return null;
+      };
+      // categories the editor can show: those in the file, in the assortment, or already overridden
+      const editableCats = useMemo(() => {
+        const nz = (s)=>String(s||'').toLowerCase().replace(/\s+/g,' ').trim();
+        const map = {};
+        const addCat = (key, div, cat, sub) => { const nk=nz(div)+'|'+nz(cat)+'|'+nz(sub); if(!map[nk]) map[nk]={ nk, key, div, cat, sub, scales:{}, base:{} }; return map[nk]; };
+        if (stdCurves) Object.keys(stdCurves).forEach(k => { const p=k.split('|'); const e=addCat(k,p[0]||'',p[1]||'',p[2]||''); Object.keys(stdCurves[k]).forEach(sc=>{ e.scales[sc]=1; e.base[sc]=stdCurves[k][sc]; }); });
+        assortment.forEach(s => { const e=addCat(s.div+'|'+s.cat+'|'+s.sub, s.div, s.cat, s.sub); if(s.scale && NSO_SCALES[s.scale]) e.scales[s.scale]=1; });
+        Object.keys(curveOverrides).forEach(k => { const p=k.split('|'); const e=addCat(k,p[0]||'',p[1]||'',p[2]||''); Object.keys(curveOverrides[k]).forEach(sc=>{ e.scales[sc]=1; }); });
+        return Object.values(map).map(e=>({ ...e, scales:Object.keys(e.scales).filter(sc=>NSO_SCALES[sc]) }))
+          .filter(e=>e.scales.length)
+          .sort((a,b)=> (a.div+'|'+a.cat+'|'+a.sub).localeCompare(b.div+'|'+b.cat+'|'+b.sub));
+      }, [stdCurves, curveOverrides, assortment]);
+
+
       // ---------- engine ----------
       const eng = useMemo(() => {
-        // ---- carve-out: reserved SKUs are locked to their reserved units and removed from the sprinkle ----
+        // ---- overlay model: Target (ideal) is the full demand plan for EVERY SKU and does NOT change with reserved.
+        //      Reserved is a separate committed overlay; only Final swaps in reserved where it exists. ----
         const resOf = (sku) => reservedUnits[sku] || 0;
-        // group by div>cat>sub, tracking free (unreserved) vs reserved SKUs
+        // group by div>cat>sub (all SKUs; reserved does not affect the plan)
         const G = {};
         assortment.forEach(s => { const k=s.div+' › '+s.cat+' › '+s.sub;
-          if (!G[k]) G[k] = { div:s.div, cat:s.cat, sub:s.sub, skus:[], free:[], resSkus:[] };
-          G[k].skus.push(s);
-          if (resOf(s.sku) > 0) G[k].resSkus.push(s); else G[k].free.push(s); });
+          if (!G[k]) G[k] = { div:s.div, cat:s.cat, sub:s.sub, skus:[] }; G[k].skus.push(s); });
         const keys = Object.keys(G);
         const simK = (g) => g.div+'|'+g.cat+'|'+g.sub;
         const slsOf = (g) => { const m = sim ? (sim[simK(g)]||{}) : {}; let v=0; (simStores.length?simStores:Object.keys(m)).forEach(st=>{ v += (weights[st]!=null?weights[st]:1) * (m[st]||0); }); return v; };
         const gmm = (skus) => { let mn=0,mx=0; skus.forEach(s=>{ const [a,b]=nsoSMM(s.scale); mn+=a; mx+=b; }); return [mn,mx]; };
-        // reserved pool (only SKUs that survived into the assortment) and the distributable remainder
         const reservedPool = assortment.reduce((a,s)=> a + resOf(s.sku), 0);
-        const distributable = Math.max(0, target - reservedPool);
         const sls = keys.map(k=>slsOf(G[k])); const slsTotal = sls.reduce((a,b)=>a+b,0);
         const noSignal = !(slsTotal > 0);
-        // demand weight per group (free-SKU count fallback when no comp signal)
-        const wt = keys.map((k,i)=> noSignal ? G[k].free.length : sls[i]);
+        // Fallback: with no comp-sales signal, weight by SKU count so Target still drives units (even depth across groups)
+        const wt = keys.map((k,i)=> noSignal ? G[k].skus.length : sls[i]);
         const wtSum = wt.reduce((a,b)=>a+b,0) || 1;
-        const rows = keys.map((k,i) => { const g=G[k], freeCt=g.free.length, ct=g.skus.length, [minU,maxU]=gmm(g.free),
-          resU=g.resSkus.reduce((a,s)=>a+resOf(s.sku),0), demand=wt[i]/wtSum, raw=demand*distributable;
-          return { k, grp:g, ct, freeCt, minU, maxU, resU, sls:wt[i], demand, raw, eligible:(freeCt>0 && raw>=minU), prop:(freeCt>0?minU:0) }; });
-        // baseline sprinkle to the DISTRIBUTABLE remainder (ignores depthAlt); groups with no free SKUs get nothing
-        let remaining = distributable - rows.reduce((a,r)=>a+r.prop,0);
+        const rows = keys.map((k,i) => { const g=G[k], ct=g.skus.length, [minU,maxU]=gmm(g.skus), demand=wt[i]/wtSum, raw=demand*target;
+          return { k, grp:g, ct, minU, maxU, sls:wt[i], demand, raw, eligible:(raw>=minU), prop:minU }; });
+        // baseline sprinkle to the FULL target (reserved does NOT reduce the plan)
+        let remaining = target - rows.reduce((a,r)=>a+r.prop,0);
         for (let it=0; it<10 && remaining>0.5; it++){ const pool=rows.filter(r=>r.eligible&&r.prop<r.maxU); const ps=pool.reduce((a,r)=>a+r.sls,0); if(ps===0)break;
-          pool.forEach(r=>{ const add=remaining*(r.sls/ps), hr=r.maxU-r.prop; r.prop+=Math.min(add,hr); }); remaining=distributable-rows.reduce((a,r)=>a+r.prop,0); }
+          pool.forEach(r=>{ const add=remaining*(r.sls/ps), hr=r.maxU-r.prop; r.prop+=Math.min(add,hr); }); remaining=target-rows.reduce((a,r)=>a+r.prop,0); }
         rows.forEach(r=>r.prop=Math.round(r.prop));
-        let diff = Math.round(rows.reduce((a,r)=>a+r.prop,0) - distributable);
+        let diff = Math.round(rows.reduce((a,r)=>a+r.prop,0) - target);
         while (diff>0){ let bv=1e9,bi=-1; rows.forEach((r,idx)=>{ const ab=r.prop-r.minU; if(r.eligible&&ab>0&&ab<bv){bv=ab;bi=idx;} }); if(bi<0)break; rows[bi].prop--; diff--; }
         while (diff<0){ let bh=0,bi=-1; rows.forEach((r,idx)=>{ const hr=r.maxU-r.prop; if(r.eligible&&hr>bh){bh=hr;bi=idx;} }); if(bi<0)break; rows[bi].prop++; diff++; }
-        // independent depth-alt override — depth applies to FREE SKUs only; Final = distributed + reserved (locked)
+        // independent depth-alt override
         const depthByKey = {};
-        rows.forEach(r => { r.baseDist=r.prop; if (depthAlt[r.k]>0){ r.overwrite=1; r.distributed=Math.round(depthAlt[r.k]*r.freeCt); } else { r.overwrite=0; r.distributed=r.baseDist; }
-          r.depth=r.freeCt?r.distributed/r.freeCt:0; r.sprinkled=r.distributed-r.minU; r.final=r.distributed + r.resU; depthByKey[r.k]=r.depth; });
-        // size-level items
+        rows.forEach(r => { r.baseFinal=r.prop; if (depthAlt[r.k]>0){ r.overwrite=1; r.final=Math.round(depthAlt[r.k]*r.ct); } else { r.overwrite=0; r.final=r.baseFinal; } r.depth=r.ct?r.final/r.ct:0; r.sprinkled=r.final-r.minU; depthByKey[r.k]=r.depth; });
+        // size-level items — ideal (Target) computed for EVERY SKU incl. reserved; Final coalesces reserved-else-target
         const items = []; const idealMap = {};
+        let finalActual = 0;
         keys.forEach(k => { G[k].skus.forEach(s => {
           const availBySize = inv && inv[s.sku] ? Object.fromEntries(Object.entries(inv[s.sku]).map(([sz,o])=>[sz,o.avail])) : null;
+          const shape = shapeFor(s.div, s.cat, s.sub, s.scale);
+          const cu = nsoCurve(s.scale, depthByKey[k]||0, { cap, force: !!forceSend[s.sku], availBySize, shape, shift: biasToShift(sizeBias[s.div]) });
+          const idealTot = cu.reduce((a,r)=>a+r.ideal,0);   // full demand plan for this SKU, reserved or not
           const reservedSku = resOf(s.sku);
           const isReserved = reservedSku > 0;
-          // reserved SKUs are locked to reserved units (curve summed to reserved); free SKUs get the demand curve
-          const cu = nsoCurve(s.scale, isReserved ? reservedSku : (depthByKey[k]||0), { cap, force: !!forceSend[s.sku], availBySize });
-          const idealTot = isReserved ? 0 : cu.reduce((a,r)=>a+r.ideal,0);   // reserved carved out of Target Allocation
           const capTot = cu.reduce((a,r)=>a+r.val,0);
-          const net = Math.max(0, (cap?capTot:idealTot) - reservedSku);       // units still to ship (ideal − reserved)
-          const finalU = isReserved ? reservedSku : idealTot;                 // canonical: reserved ? reserved : target
+          const net = Math.max(0, (cap?capTot:idealTot) - reservedSku);   // target − reserved
+          const finalU = isReserved ? reservedSku : idealTot;             // canonical: reserved ? reserved : target
           // broken: any required size with no availability (+reserved) when inventory present
           let broken = false; if (inv){ broken = cu.some(r => r.req && ((availBySize?(availBySize[r.size]||0):0) + 0) < 1); }
           const st = statusOf(s.sku, broken);
           idealMap[s.sku] = idealTot;
+          finalActual += finalU;
           items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, isReserved, final:finalU, st, forced: !!forceSend[s.sku] });
         }); });
-        return { rows, items, idealMap, reservedPool, distributable, totalFinal: rows.reduce((a,r)=>a+r.final,0), noSignal };
-      }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits]);
+        return { rows, items, idealMap, reservedPool, totalTarget: rows.reduce((a,r)=>a+r.final,0), totalFinal: finalActual, noSignal };
+      }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits, data.stdCurves, data.curveOverrides, sizeBias]);
 
       // persist idealAllocation when it changes (guarded to avoid loops)
       const lastIdeal = useRef('');
@@ -3396,7 +3489,7 @@
         {id:'Division',al:'left',val:r=>r.grp.div,cat:1},{id:'Category',al:'left',val:r=>r.grp.cat,cat:1},{id:'Sub-Category',al:'left',val:r=>r.grp.sub,cat:1},
         {id:'SKUs',al:'center',val:r=>r.ct},{id:'Scale',al:'center',val:r=>{const set=[...new Set(r.grp.skus.map(s=>s.scale))];return set.length===1?set[0]:'mixed';},cat:1},
         {id:'Demand %',al:'right',val:r=>(r.demand*100).toFixed(1)},{id:'Raw U',al:'right',val:r=>Math.round(r.raw)},{id:'Min U',al:'right',val:r=>r.minU},{id:'Max U',al:'right',val:r=>r.maxU},
-        {id:'Sprinkled',al:'right',val:r=>r.sprinkled},{id:'Final U',al:'right',val:r=>r.final},{id:'Depth Alt',al:'center',input:1},{id:'Depth',al:'right',val:r=>r.depth.toFixed(1)},{id:'% TTL',al:'right',val:r=>target?((r.final/target*100).toFixed(0)):'0'}
+        {id:'Sprinkled',al:'right',val:r=>r.sprinkled},{id:'Target U',al:'right',val:r=>r.final},{id:'Depth Alt',al:'center',input:1},{id:'Depth',al:'right',val:r=>r.depth.toFixed(1)},{id:'% TTL',al:'right',val:r=>target?((r.final/target*100).toFixed(0)):'0'}
       ];
       const FZ = [['Division',68],['Category',92],['Sub-Category',96],['SKU',112],['Style Description',150],['Color Description',108]];
       const FZMAP = {}; { let l=0; FZ.forEach(([id,w])=>{ FZMAP[id]={left:l,w}; l+=w; }); }
@@ -3405,6 +3498,7 @@
         {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},
         {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},{id:'Status',al:'center',val:i=>i.st,cat:1},
         {id:'Reserved',al:'right',val:i=>i.reservedSku},{id:'Target U',al:'right',val:i=>i.ideal},{id:'Net U',al:'right',val:i=>i.net},{id:'Final U',al:'right',val:i=>i.final},
+        {id:'Notes',al:'left',plain:1},
         {id:'Sizes',al:'left',plain:1}
       ];
       L2COLS.forEach(c => { if (FZMAP[c.id]){ c.left=FZMAP[c.id].left; c.w=FZMAP[c.id].w; } });
@@ -3488,6 +3582,7 @@
           'Target Units': it.ideal || 0,
           'Net Units': it.net || 0,
           'Final Units': it.final || 0,
+          Notes: skuNotes[it.s.sku] || '',
         }));
         // Sheet 2 — category summary
         const catMap = {};
@@ -3496,10 +3591,10 @@
           o.SKUs++; if(it.isReserved)o['Reserved SKUs']++; o['Target Units']+=it.ideal||0; o['Reserved Units']+=it.reservedSku||0; o['Net Units']+=it.net||0; o['Final Units']+=it.final||0; });
         const summary = Object.values(catMap);
         summary.push({ Division:'TOTAL', Category:'', SKUs: eng.items.length, 'Reserved SKUs': resCount,
-          'Target Units': eng.distributable, 'Reserved Units': eng.reservedPool,
+          'Target Units': eng.items.reduce((a,i)=>a+(i.ideal||0),0), 'Reserved Units': eng.reservedPool,
           'Net Units': eng.items.reduce((a,i)=>a+(i.net||0),0), 'Final Units': eng.totalFinal });
         const wb = XLSX.utils.book_new();
-        const wsD = XLSX.utils.json_to_sheet(detail); wsD['!cols'] = [{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:12},{wch:16},{wch:9},{wch:13},{wch:12},{wch:10},{wch:11}];
+        const wsD = XLSX.utils.json_to_sheet(detail); wsD['!cols'] = [{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:12},{wch:16},{wch:9},{wch:13},{wch:12},{wch:10},{wch:11},{wch:30}];
         XLSX.utils.book_append_sheet(wb, wsD, 'Allocation Detail');
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), 'Category Summary');
         const nm = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
@@ -3532,9 +3627,9 @@
               {upBtn('42 Sim Doors', sim?simStores.join(' + '):'', !!sim, onSim)}
               {upBtn('SKU Tracker', tracker&&Object.keys(tracker).length?Object.keys(tracker).length+' SKUs':'', !!(tracker&&Object.keys(tracker).length), onTracker)}
               {upBtn('Reserved Units', Object.keys(reservedUnits).length?Object.keys(reservedUnits).length+' SKUs':'', Object.keys(reservedUnits).length>0, onReserved)}
-              <div className="text-sm border rounded px-2 py-2 bg-gray-50 text-gray-600 flex items-center justify-between"><span>Size Scales: default (22)</span></div>
+              {upBtn('Standard Curves', stdCurves?Object.keys(stdCurves).length+' categories':'', !!stdCurves, onSizeCurves)}
             </div>
-            <div className="text-xs text-gray-400 mt-2">Reserved Units file: columns <b>SKU</b> + <b>Reserved</b> (or Quantity). Shared with the Depth Review upload — load it in either place. Reserved SKUs are locked to their reserved units and carved out of the target sprinkle.</div>
+            <div className="text-xs text-gray-400 mt-2">Reserved Units file: columns <b>SKU</b> + <b>Reserved</b> (or Quantity/Reserve Qty). Shared with the Depth Review upload. Reserved does not change Target Allocation; it only overrides Final Units where a SKU is reserved. <b>Standard Curves</b> sets the size shape per category — depth stays driven by the target/sim demand, the curve only decides how those units split across sizes. Categories not in the file fall back to the default min/max curve.</div>
           </div>
 
           {/* Controls */}
@@ -3552,12 +3647,12 @@
           </div>
           {eng.reservedPool > 0 && (
             <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-4 text-xs text-slate-700 flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-slate-500 uppercase tracking-wide text-[10px] mr-1">Carve-out</span>
-              <span>Target <b className="tabular-nums">{fmt(target)}</b></span>
-              <span className="text-slate-400">=</span>
-              <span className="text-teal-700">Reserved (locked) <b className="tabular-nums">{fmt(eng.reservedPool)}</b> · {resCount} SKUs</span>
-              <span className="text-slate-400">+</span>
-              <span className="text-indigo-700">Distributable <b className="tabular-nums">{fmt(eng.distributable)}</b> · {freeCount} SKUs</span>
+              <span className="font-semibold text-slate-500 uppercase tracking-wide text-[10px] mr-1">Reserved overlay</span>
+              <span className="text-teal-700"><b className="tabular-nums">{fmt(eng.reservedPool)}</b> units locked · {resCount} SKUs</span>
+              <span className="text-slate-400">·</span>
+              <span>Target Allocation stays the full plan (<b className="tabular-nums">{fmt(target)}</b>)</span>
+              <span className="text-slate-400">·</span>
+              <span className="text-indigo-700">Final Units <b className="tabular-nums">{fmt(eng.totalFinal)}</b> (reserved where reserved, else target)</span>
             </div>
           )}
           {simStores.length>0 && (
@@ -3570,6 +3665,82 @@
             </div>
           )}
 
+          {/* Size Scaling by Division (runs small / large) */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <div className="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wide">Size Scaling by Division</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+              {['Mens','Womens','Kids','Non Apparel'].map(dv => {
+                const cur = sizeBias[dv] || 'neutral';
+                const set = (v)=>{ const nb={...sizeBias}; if(v==='neutral') delete nb[dv]; else nb[dv]=v; setSizeBias(nb); saveSettings({sizeBias:nb}); };
+                const btn = (v,label,activeCls)=> <button key={v} onClick={()=>set(v)} className={'px-3 py-1.5 '+(v!=='small'?'border-l ':'')+(cur===v?activeCls:'bg-white text-gray-600 hover:bg-gray-50')}>{label}</button>;
+                return (
+                  <div key={dv} className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-700 w-24">{dv}</span>
+                    <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden text-xs">
+                      {btn('small','Runs Small','bg-emerald-600 text-white font-semibold')}
+                      {btn('neutral','Neutral','bg-[#1C3554] text-white font-semibold')}
+                      {btn('large','Runs Large','bg-rose-500 text-white font-semibold')}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-xs text-gray-400 mt-3">Slides each division's standard curve one size toward S/M or L/XL (waist for pants). Totals per style don't change — only the size split. Single-size runs (OS) are unaffected.</div>
+          </div>
+
+          {/* Standard Curve Editor */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Standard Curve Editor</div>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-400">{Object.keys(curveOverrides).length ? Object.values(curveOverrides).reduce((a,c)=>a+Object.keys(c).length,0)+' customized' : 'base: uploaded file'}</span>
+                <button onClick={()=>setShowEditor(v=>!v)} className="text-xs border rounded px-2 py-1 hover:bg-gray-50">{showEditor?'Hide':'Edit curves'}</button>
+              </div>
+            </div>
+            {showEditor && (() => {
+              const sel = editableCats.find(e=>e.nk===editCat) || editableCats[0];
+              if (!sel) return <div className="text-xs text-gray-400 mt-3">No categories available yet — upload Standard Curves or load the assortment first.</div>;
+              return (
+                <div className="mt-3">
+                  <div className="flex items-center gap-2 mb-4">
+                    <label className="text-xs text-gray-500">Category</label>
+                    <select value={sel.nk} onChange={e=>setEditCat(e.target.value)} className="border rounded px-2 py-1 text-sm bg-white">
+                      {editableCats.map(e=> <option key={e.nk} value={e.nk}>{e.div} › {e.cat} › {e.sub}</option>)}
+                    </select>
+                  </div>
+                  {sel.scales.map(scale => {
+                    const sizes = NSO_SCALES[scale].map(r=>r[1]);
+                    const base = sel.base[scale] || {};
+                    const over = (curveOverrides[sel.key]||{})[scale] || null;
+                    const eff = (sz)=> over && over[sz]!=null ? over[sz] : (base[sz]!=null?base[sz]:0);
+                    const setSize = (sz, val) => {
+                      const v = Math.max(0, parseInt(val)||0);
+                      const nextScale = {}; sizes.forEach(z=>{ const cur = z===sz ? v : eff(z); if(cur>0) nextScale[z]=cur; });
+                      const no = { ...curveOverrides }; no[sel.key] = { ...(no[sel.key]||{}) }; no[sel.key][scale] = nextScale; saveCurve(no);
+                    };
+                    const reset = () => { const no={...curveOverrides}; if(no[sel.key]){ const sc={...no[sel.key]}; delete sc[scale]; if(Object.keys(sc).length) no[sel.key]=sc; else delete no[sel.key]; } saveCurve(no); };
+                    const tot = sizes.reduce((a,z)=>a+eff(z),0);
+                    const fileTot = sizes.reduce((a,z)=>a+(base[z]||0),0);
+                    return (
+                      <div key={scale} className="border border-gray-200 rounded-lg p-3 mb-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-sm font-semibold text-gray-700">Scale {scale} <span className="text-xs font-normal text-gray-400">· {sizes.length} sizes</span></div>
+                          {over ? <button onClick={reset} className="text-xs text-[#1C3554] underline">Reset to file</button> : <span className="text-xs text-gray-300">matches file</span>}
+                        </div>
+                        <div className="overflow-x-auto"><table className="text-xs"><thead className="text-gray-400"><tr><th className="text-left pr-3 py-1"></th>{sizes.map(z=><th key={z} className="px-1 text-center" style={{minWidth:44}}>{z}</th>)}<th className="pl-3 text-center">Σ</th></tr></thead>
+                          <tbody>
+                            <tr className="text-gray-400"><td className="text-left pr-3 py-1">File</td>{sizes.map(z=><td key={z} className="px-1 text-center">{base[z]!=null?base[z]:'—'}</td>)}<td className="pl-3 text-center">{fileTot||'—'}</td></tr>
+                            <tr><td className="text-left pr-3 py-1 text-gray-600 font-medium">Current</td>{sizes.map(z=>{ const changed = over && (over[z]||0)!==(base[z]||0); return <td key={z} className="px-1 py-1 text-center"><input type="number" value={eff(z)||''} onChange={e=>setSize(z,e.target.value)} className={'w-11 border rounded px-1 py-0.5 text-center '+(changed?'border-amber-300 bg-amber-50':'border-gray-200')} /></td>; })}<td className="pl-3 text-center font-semibold text-gray-700">{tot}</td></tr>
+                          </tbody></table></div>
+                      </div>
+                    );
+                  })}
+                  <div className="text-xs text-gray-500 mt-1 leading-relaxed">Edits override the uploaded file per category + scale and sync to your team; "Reset to file" clears them. You can also define a curve for a category the file doesn't cover. Editing changes the size shape only — depth still comes from the target/sim demand, and Runs Small/Large skews whatever the current curve is.</div>
+                </div>
+              );
+            })()}
+          </div>
+
           {eng.noSignal && <div className="mb-3 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded px-3 py-2">No comp-sales signal (42 Sim Doors not loaded) — distributing Target by SKU count so units still respond to the target. Upload 42 Sim Doors for demand-weighted allocation.</div>}
           {/* LAYER 1 */}
           <div className="mb-2 flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 1 · Adjust to Target</h3><span className="text-xs text-gray-400">comp demand → raw units → min/max → sprinkle → depth · click a row to drill in</span></div>
@@ -3578,7 +3749,7 @@
               <th className="text-left px-3 py-2">Division</th><th className="text-left px-2 py-2">Category</th><th className="text-left px-2 py-2">Sub-Category</th>
               <th className="text-center px-2 py-2">SKUs</th><th className="text-center px-2 py-2">Scale</th>
               <th className="text-right px-2 py-2">Demand %</th><th className="text-right px-2 py-2">Raw U</th><th className="text-right px-2 py-2">Min U</th><th className="text-right px-2 py-2">Max U</th>
-              <th className="text-right px-2 py-2">Sprinkled</th><th className="text-right px-2 py-2">Final U</th><th className="text-center px-2 py-2">Depth Alt</th><th className="text-right px-2 py-2">Depth</th><th className="text-right px-3 py-2">% TTL</th>
+              <th className="text-right px-2 py-2">Sprinkled</th><th className="text-right px-2 py-2">Target U</th><th className="text-center px-2 py-2">Depth Alt</th><th className="text-right px-2 py-2">Depth</th><th className="text-right px-3 py-2">% TTL</th>
             </tr></thead>
             <tbody>{sortedDivs.map(dn => { const d=l1tree[dn]; const dOpen=!!expDiv[dn]; return (
               <React.Fragment key={dn}>
@@ -3620,7 +3791,7 @@
 
           {/* LAYER 2 */}
           <div className="mb-2 flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 2 · Size-Level Allocation</h3><span className="text-xs text-gray-400">click a header to sort/filter · scale override · force-send</span></div>
+            <div className="flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 2 · Size-Level Allocation</h3><span className="text-xs text-gray-400">click a header to sort/filter · scale override · force-send · notes</span></div>
             <div className="flex items-center gap-3">
               <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden text-xs">
                 <button onClick={()=>setResFilter('all')} className={'px-3 py-1.5 '+(resFilter==='all'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>All <span className="opacity-70">{eng.items.length}</span></button>
@@ -3633,7 +3804,7 @@
           <div className="bg-white border border-gray-200 rounded-lg mb-4" style={{maxHeight:'70vh', overflow:'auto'}}>
             <table className="w-full text-xs" style={{borderCollapse:'separate', borderSpacing:0}}>
               <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L2COLS.map(c=>headerCell('L2',c,l2F))}</tr></thead>
-              <tbody>{l2items.length===0 ? <tr><td colSpan={13} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
+              <tbody>{l2items.length===0 ? <tr><td colSpan={14} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
                 const fzStyle = (id) => ({ position:'sticky', left:FZMAP[id].left, minWidth:FZMAP[id].w, width:FZMAP[id].w, maxWidth:FZMAP[id].w, overflow:'hidden', textOverflow:'ellipsis', background:'#fff', zIndex:5, borderBottom:'1px solid #eef0f2' });
                 return (
                 <tr key={it.s.sku+idx} className="align-middle">
@@ -3651,9 +3822,11 @@
                     <button onClick={()=>{const f={...forceSend}; if(f[it.s.sku])delete f[it.s.sku]; else f[it.s.sku]=true; setForceSend(f); saveOverrides({forceSend:f});}} className={'rounded px-1.5 py-0.5 border mr-1 '+(it.forced?'bg-amber-600 text-white border-amber-600':'text-gray-500')} style={{fontSize:'11px'}}>Force</button>
                     <span className="rounded px-1.5 py-0.5" style={{fontSize:'11px', ...stBadge(it.st)}}>{it.st}</span></td>
                   <td className="px-3 py-2 text-right" style={{borderBottom:'1px solid #eef0f2'}}>{it.reservedSku>0 ? <span className="inline-block rounded-full bg-teal-600 text-white px-2 py-0.5" style={{fontSize:'10px',fontWeight:600}}>{fmt(it.reservedSku)}</span> : <span className="text-gray-300">—</span>}</td>
-                  <td className="px-3 py-2 text-right text-gray-500" style={{borderBottom:'1px solid #eef0f2'}}>{it.isReserved ? <span className="text-gray-300">—</span> : fmt(it.ideal)}</td>
+                  <td className="px-3 py-2 text-right text-gray-600" style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.ideal)}</td>
                   <td className="px-3 py-2 text-right text-gray-500" style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.net)}</td>
                   <td className={'px-3 py-2 text-right font-semibold bg-indigo-50 '+(it.isReserved?'text-teal-700':'text-indigo-700')} style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.final)}</td>
+                  <td className="px-1 py-1" style={{borderBottom:'1px solid #eef0f2'}}>
+                    <input type="text" value={skuNotes[it.s.sku]||''} placeholder="Add note…" onChange={e=>{const v=e.target.value; const nn={...skuNotes}; if(v) nn[it.s.sku]=v; else delete nn[it.s.sku]; setSkuNotes(nn); saveOverrides({skuNotes:nn});}} className={'px-1.5 py-1 border rounded text-xs '+(skuNotes[it.s.sku]?'border-amber-300 bg-amber-50':'border-gray-200')} style={{minWidth:150}} /></td>
                   <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>(
                     <td key={i} className="text-center px-1 py-0.5" style={{borderLeft:'1px solid #f1f5f9', background:r.req?'':'rgba(249,250,251,0.4)', minWidth:26}}>
                       <div className="text-gray-400" style={{fontSize:'10px'}}>{r.size}</div>
@@ -3664,11 +3837,11 @@
             </table>
           </div>
 
-          <div className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded px-3 py-2 mb-6">{'↳'} Final U (reserved SKUs = reserved units, everything else = target) feeds Step 6 · Depth Review, so the two tabs tie out. Net U is units still to ship (target − reserved).</div>
+          <div className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded px-3 py-2 mb-6">{'↳'} Target U is the full demand plan (unchanged by reserved). Final U = reserved units where a SKU is reserved, otherwise target. Net U = target − reserved. Final U feeds Step 6 · Depth Review, so the two tabs tie out.</div>
 
           <div className="flex justify-between border-t pt-4">
             <button onClick={()=>onPrev(4)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
-            <button onClick={()=>{ onDataChange({ ...data, allocSettings:{target,allocDate,openDate,weights,cap,targetOverride:(data.allocSettings&&data.allocSettings.targetOverride)||false}, allocOverrides:{depthAlt,scaleOverride,forceSend}, idealAllocation: eng.idealMap, allocationComplete:true }); onNext(6); }} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Depth Review</button>
+            <button onClick={()=>{ onDataChange({ ...data, allocSettings:{target,allocDate,openDate,weights,cap,sizeBias,targetOverride:(data.allocSettings&&data.allocSettings.targetOverride)||false}, allocOverrides:{depthAlt,scaleOverride,forceSend,skuNotes}, idealAllocation: eng.idealMap, allocationComplete:true }); onNext(6); }} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Depth Review</button>
           </div>
           {renderPop()}
         </div>
@@ -4842,7 +5015,7 @@
       try {
         // Keep bulky Allocation uploads (42 Inv/Sim/Tracker) in memory only — never persist them.
         const slim = { ...appData };
-        ['allocInv','allocSim','allocSimStores','allocTracker'].forEach(function(k){ delete slim[k]; });
+        ['allocInv','allocSim','allocSimStores','allocTracker','stdCurves','curveOverrides'].forEach(function(k){ delete slim[k]; });
         const res = await supaFetch('projects', {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates' },
