@@ -3270,11 +3270,21 @@
         setWeights(w); persist({ allocSim: map, allocSimStores: storeArr, allocSettings:{ target, allocDate, openDate, cap, weights:w } });
       });
       const onReserved = (file) => parseSheet(file, (rows) => {
-        const { hi, find } = headerIndexer(rows);
-        const cS = find('sku','style-color','style color'), cR = find('reserved','reserve','quantity','qty');
-        if (cS < 0 || cR < 0) { alert('Reserved Units: need a SKU column and a Reserved (or Quantity) column.'); return; }
+        const { hi, hdr } = headerIndexer(rows);
+        const idxExact = (name) => hdr.findIndex(h => h === name);
+        const idxIncl = (pred) => hdr.findIndex(pred);
+        // SKU column: prefer the exact style-color "SKU" (never "SKU with Size"), since the tool keys at style-color level
+        let cS = idxExact('sku');
+        if (cS < 0) cS = idxIncl(h => h==='style-color' || h==='style color' || h==='style/color');
+        if (cS < 0) cS = idxIncl(h => h.includes('sku') && !h.includes('size'));
+        if (cS < 0) cS = idxIncl(h => h.includes('sku'));
+        // Reserve column: an explicit reserve/reserved quantity ("Reserve Qty", "Reserved Units", "Reserved")
+        let cR = idxIncl(h => h.includes('reserve'));
+        if (cR < 0) cR = idxIncl(h => h === 'qty' || h === 'quantity');
+        if (cS < 0 || cR < 0) { alert('Reserved Units: need a style-color SKU column and a Reserved / Reserve Qty column.'); return; }
         const map = {};
         for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const sku=String(r[cS]||'').trim(); if(!sku)continue; const v=parseInt(r[cR])||0; if(v) map[sku]=(map[sku]||0)+v; }
+        if (Object.keys(map).length === 0) { alert('Reserved Units: file parsed, but no rows had a positive reserve quantity. Check the Reserve Qty column.'); return; }
         persist({ reservedUnits: map });
       });
       const onTracker = (file) => parseSheet(file, (rows) => {
