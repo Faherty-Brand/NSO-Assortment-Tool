@@ -5013,9 +5013,10 @@
 
       // Save full data to Supabase and WAIT for it
       try {
-        // Keep bulky Allocation uploads (42 Inv/Sim/Tracker) in memory only — never persist them.
+        // Persist the full store record — including the uploaded 42 Inventory / Sim / Tracker files, the standard
+        // size curves, curve edits and reserved units — so they hold across reloads (and sync to teammates) and
+        // only change when the person re-uploads. (Previously these were stripped and kept in memory only.)
         const slim = { ...appData };
-        ['allocInv','allocSim','allocSimStores','allocTracker','stdCurves','curveOverrides'].forEach(function(k){ delete slim[k]; });
         const res = await supaFetch('projects', {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates' },
