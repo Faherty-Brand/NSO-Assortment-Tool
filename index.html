@@ -3942,7 +3942,7 @@
                   <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>{
                     const tgt = cap?r.val:r.ideal;
                     const rbs = reservedBySize[it.s.sku] && reservedBySize[it.s.sku][r.size] ? (reservedBySize[it.s.sku][r.size].qty||0) : 0;
-                    const showR = it.isReserved;
+                    const showR = it.isReserved && reservedBySize[it.s.sku] && Object.keys(reservedBySize[it.s.sku]).length>0;
                     let bg = r.req?'':'rgba(249,250,251,0.4)';
                     if (showR) bg = (removeSkus[it.s.sku] || rbs>tgt) ? '#ffe4e6' : rbs<tgt ? '#ccfbf1' : '#f0fdf4';
                     return (<td key={i} className="text-center px-1 py-0.5" style={{borderLeft:'1px solid #f1f5f9', background:bg, minWidth:26}}>
