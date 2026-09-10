@@ -3543,6 +3543,9 @@
       const l2items = resFilter==='all' ? l2base : l2base.filter(i => resFilter==='reserved' ? i.isReserved : !i.isReserved);
       const resCount = eng.items.filter(i=>i.isReserved).length;
       const freeCount = eng.items.length - resCount;
+      const reservedLoaded = Object.keys(reservedUnits).length;
+      const asstSkuSet = new Set(assortment.map(s=>s.sku));
+      const reservedUnmatched = Object.keys(reservedUnits).filter(k => (reservedUnits[k]||0)>0 && !asstSkuSet.has(k));
       const tFinal = eng.rows.reduce((a,r)=>a+r.final,0);
       const tSkus = eng.rows.reduce((a,r)=>a+r.ct,0);
       const tRaw = eng.rows.reduce((a,r)=>a+r.raw,0);
@@ -3630,6 +3633,16 @@
               {upBtn('Standard Curves', stdCurves?Object.keys(stdCurves).length+' categories':'', !!stdCurves, onSizeCurves)}
             </div>
             <div className="text-xs text-gray-400 mt-2">Reserved Units file: columns <b>SKU</b> + <b>Reserved</b> (or Quantity/Reserve Qty). Shared with the Depth Review upload. Reserved does not change Target Allocation; it only overrides Final Units where a SKU is reserved. <b>Standard Curves</b> sets the size shape per category — depth stays driven by the target/sim demand, the curve only decides how those units split across sizes. Categories not in the file fall back to the default min/max curve.</div>
+            {reservedLoaded>0 && (
+              <div className="text-xs mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-teal-700 font-semibold">Reserved: {fmt(reservedLoaded)} loaded</span>
+                <span className="text-gray-300">·</span>
+                <span className="text-gray-600">{fmt(resCount)} matched to assortment</span>
+                <span className="text-gray-300">·</span>
+                <span className={reservedUnmatched.length ? 'text-amber-700 font-medium' : 'text-gray-400'}>{reservedUnmatched.length} not in assortment</span>
+                {reservedUnmatched.length>0 && <span className="text-gray-400 basis-full">Not carried: {reservedUnmatched.slice(0,25).map(k=>k+' ('+fmt(reservedUnits[k])+')').join(',  ')}{reservedUnmatched.length>25?'  … +'+(reservedUnmatched.length-25)+' more':''}</span>}
+              </div>
+            )}
           </div>
 
           {/* Controls */}
