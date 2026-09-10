@@ -3351,14 +3351,30 @@
       });
       const onTracker = (file) => parseSheet(file, (rows) => {
         const { hi, find } = headerIndexer(rows);
-        const cS=find('sku','style-color'), cCS=find('cs oo','cs delivery'), cNS=find('ns oo','ns delivery'), cOO=find('next oo','oo date','on order','delivery date'), cF=find('force'), cSt=find('status');
+        const cS=find('sku','style-color');
         if (cS<0){ alert('SKU Tracker: need a SKU column.'); return; }
+        // legacy columns
+        const cCS=find('cs oo','cs delivery'), cNS=find('ns oo','ns delivery'), cOO=find('next oo','oo date','on order','delivery date');
+        // ISR export columns
+        const cInDC=find('next in-dc','next in dc','in-dc'), cDelv=find('delivery'), cYr=find('alloc drop date','drop date');
+        const cF=find('force'), cSt=find('status');
+        const KNOWN_ST=['READY','On time for Drop','On time for Opening','Arriving after Open','Broken, no Replen'];
+        const MON={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
+        const toISO=(v)=>{ if(v===''||v==null) return '';
+          if(typeof v==='number'){ const d=new Date(Math.round((v-25569)*86400*1000)); return isNaN(d)?'':d.toISOString().slice(0,10); }
+          const m=String(v).match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/); if(m){ let y=+m[3]; if(y<100)y+=2000; const d=new Date(y,(+m[1])-1,+m[2]); return isNaN(d)?'':d.toISOString().slice(0,10); }
+          const d=new Date(v); return isNaN(d)?'':d.toISOString().slice(0,10); };
+        const windowToISO=(name,yearHint)=>{ if(!name) return ''; const s=String(name).toLowerCase().trim(); const mk=Object.keys(MON).find(k=>s.startsWith(k)); if(mk==null) return ''; const d=new Date(yearHint||new Date().getFullYear(), MON[mk], 15); return isNaN(d)?'':d.toISOString().slice(0,10); };
         const map={};
-        const toISO=(v)=>{ if(v==='' || v==null) return ''; if(typeof v==='number'){ const d=XLSX.SSF? new Date(Math.round((v-25569)*86400*1000)):null; return d?d.toISOString().slice(0,10):''; } const d=new Date(v); return isNaN(d)?String(v):d.toISOString().slice(0,10); };
         for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const sku=String(r[cS]||'').trim(); if(!sku)continue;
-          let oo=''; const cs=cCS>=0?toISO(r[cCS]):''; const ns=cNS>=0?toISO(r[cNS]):''; if(cs||ns){ oo=[cs,ns].filter(Boolean).sort()[0]; } else if(cOO>=0){ oo=toISO(r[cOO]); }
-          if (!oo) oo='N/A';
-          map[sku]={ oo, force: cF>=0 ? (String(r[cF]||'').trim().toUpperCase()==='X' || String(r[cF]).toLowerCase()==='true') : false, status: cSt>=0?String(r[cSt]||'').trim():'' }; }
+          let oo=''; const cs=cCS>=0?toISO(r[cCS]):'', ns=cNS>=0?toISO(r[cNS]):'';
+          if(cs||ns){ oo=[cs,ns].filter(Boolean).sort()[0]; }
+          else if(cOO>=0 && toISO(r[cOO])){ oo=toISO(r[cOO]); }
+          else if(cInDC>=0 && toISO(r[cInDC])){ oo=toISO(r[cInDC]); }                       // ISR: Next In-DC (exact arrival date)
+          else if(cDelv>=0){ const yh=cYr>=0?((String(r[cYr]).match(/(20\d{2})/)||[])[1]):null; oo=windowToISO(r[cDelv], yh?+yh:null); }  // fallback: Delivery window -> ~mid-month
+          if(!oo) oo='N/A';
+          const rawSt = cSt>=0?String(r[cSt]||'').trim():'';
+          map[sku]={ oo, force: cF>=0 ? (String(r[cF]||'').trim().toUpperCase()==='X' || String(r[cF]).toLowerCase()==='true') : false, status: KNOWN_ST.includes(rawSt)?rawSt:'', delivery: cDelv>=0?String(r[cDelv]||'').trim():'' }; }
         persist({ allocTracker: map });
       });
 
