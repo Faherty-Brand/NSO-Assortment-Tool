@@ -3956,7 +3956,7 @@
                   <td className="px-1 py-1" style={{borderBottom:'1px solid #eef0f2'}}>
                     <input type="text" value={skuNotes[it.s.sku]||''} placeholder="Add note…" onChange={e=>{const v=e.target.value; const nn={...skuNotes}; if(v) nn[it.s.sku]=v; else delete nn[it.s.sku]; setSkuNotes(nn); saveOverrides({skuNotes:nn});}} className={'px-1.5 py-1 border rounded text-xs '+(skuNotes[it.s.sku]?'border-amber-300 bg-amber-50':'border-gray-200')} style={{minWidth:150}} /></td>
                   <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>{
-                    const tgt = cap?r.val:r.ideal;
+                    const tgt = r.ideal;   // always the true demand target — availability is shown via whse + amber, not by capping the number
                     const rbs = reservedBySize[it.s.sku] && reservedBySize[it.s.sku][r.size] ? (reservedBySize[it.s.sku][r.size].qty||0) : 0;
                     const hasR = it.isReserved && reservedBySize[it.s.sku] && Object.keys(reservedBySize[it.s.sku]).length>0;
                     const av = inv && inv[it.s.sku] && inv[it.s.sku][r.size] ? (inv[it.s.sku][r.size].avail||0) : null;
@@ -3970,7 +3970,7 @@
                     } else if (gap) { bg='#fde68a'; }                           // non-reserved: flag inventory gap vs target
                     return (<td key={i} className="text-center px-1 py-0.5" style={{borderLeft:'1px solid #f1f5f9', background:bg, minWidth:26}}>
                       <div className="text-gray-400" style={{fontSize:'10px'}}>{r.size}</div>
-                      {r.flag!=='' ? <span className={r.flag==='X'?'text-red-600 font-bold':'text-gray-400 font-bold'}>{r.flag}</span> : <span className="text-gray-700 font-semibold">{tgt}</span>}
+                      <span className="text-gray-700 font-semibold">{tgt}</span>
                       {hasR && <div style={{marginTop:1}}><span className="inline-block rounded-full bg-teal-600 text-white" style={{padding:'0 5px',fontSize:'9px',fontWeight:700,lineHeight:'15px'}}>{rbs}</span></div>}
                       {inv && av!=null && <div style={{fontSize:'9px',color:'#6b7280',marginTop:1}}>whse <b style={{color:'#374151'}}>{av}</b></div>}
                     </td>);
