@@ -3320,16 +3320,19 @@
         const idxExact = (name) => hdr.findIndex(h => h === name);
         const idxIncl = (pred) => hdr.findIndex(pred);
         // SKU column: prefer the exact style-color "SKU" (never "SKU with Size"), since the tool keys at style-color level
-        let cS = idxExact('sku');
+        let cS = idxExact('sku'), stripSize = false;
         if (cS < 0) cS = idxIncl(h => h==='style-color' || h==='style color' || h==='style/color');
         if (cS < 0) cS = idxIncl(h => h.includes('sku') && !h.includes('size'));
-        if (cS < 0) cS = idxIncl(h => h.includes('sku'));
+        // no plain style-color column — fall back to a with-size column (Sku/Size, SKU with Size) and derive the style-color
+        if (cS < 0) { cS = idxIncl(h => h.includes('sku') || h.includes('style')); stripSize = true; }
         // Reserve column: an explicit reserve/reserved quantity ("Reserve Qty", "Reserved Units", "Reserved")
         let cR = idxIncl(h => h.includes('reserve'));
         if (cR < 0) cR = idxIncl(h => h === 'qty' || h === 'quantity');
-        if (cS < 0 || cR < 0) { alert('Reserved Units: need a style-color SKU column and a Reserved / Reserve Qty column.'); return; }
+        if (cS < 0 || cR < 0) { alert('Reserved Units: need a SKU / Style-Color column and a Reserved / Reserve Qty column.'); return; }
+        // style-color = STYLE-COLOR (first two hyphen tokens); anything after is the size
+        const styleColor = (raw) => { const t = String(raw||'').trim().split('-'); return t.length > 2 ? t.slice(0,2).join('-') : t.join('-'); };
         const map = {};
-        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const sku=String(r[cS]||'').trim(); if(!sku)continue; const v=parseInt(r[cR])||0; if(v) map[sku]=(map[sku]||0)+v; }
+        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; let sku=String(r[cS]||'').trim(); if(!sku)continue; if(stripSize) sku=styleColor(sku); const v=parseInt(r[cR])||0; if(v) map[sku]=(map[sku]||0)+v; }
         if (Object.keys(map).length === 0) { alert('Reserved Units: file parsed, but no rows had a positive reserve quantity. Check the Reserve Qty column.'); return; }
         persist({ reservedUnits: map });
       });
