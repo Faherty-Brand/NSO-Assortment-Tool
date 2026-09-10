@@ -3299,12 +3299,28 @@
       };
 
       const onInv = (file) => parseSheet(file, (rows) => {
-        const { hi, find } = headerIndexer(rows);
-        const cS = find('sku','style-color','style color'), cSize = find('size'), cAv = find('avail','available','on hand','stock','units'), cU = find('upc');
-        if (cS < 0 || cSize < 0) { alert('42 Inventory: need at least SKU and Size columns.'); return; }
+        const { hi, hdr, find } = headerIndexer(rows);
+        const idxExact = (n) => hdr.findIndex(h => h === n), idxIncl = (p) => hdr.findIndex(p);
+        // SKU column: prefer the exact style-color "SKU" (never "SKU with Size")
+        let cS = idxExact('sku');
+        if (cS < 0) cS = idxIncl(h => h==='style-color' || h==='style color' || h==='style/color');
+        if (cS < 0) cS = idxIncl(h => h.includes('sku') && !h.includes('size'));
+        if (cS < 0) cS = idxIncl(h => h.includes('sku'));
+        // Size column: prefer an exact size column (never "SKU with Size")
+        let cSize = idxExact('size'); if (cSize < 0) cSize = idxExact('product size');
+        if (cSize < 0) cSize = idxIncl(h => h.includes('size') && !h.includes('sku') && !h.includes('style'));
+        const cAv = find('avail','available','on hand','stock','units'), cU = find('upc');
+        const cLoc = idxIncl(h => h.includes('location type') || h==='location' || h==='channel');
+        if (cS < 0 || cSize < 0) { alert('42 Inventory: need SKU (style-color) and Size columns.'); return; }
+        // if a Location Type column with "Online" rows exists, use only those as available-to-allocate; else use every row
+        const data2 = rows.slice(hi+1);
+        const useOnline = cLoc>=0 && data2.some(r=>Array.isArray(r) && String(r[cLoc]||'').trim().toLowerCase()==='online');
         const map = {};
-        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const sku=String(r[cS]||'').trim(); const size=String(r[cSize]||'').trim(); if(!sku||!size)continue;
-          map[sku]=map[sku]||{}; map[sku][size]={ avail: cAv>=0?(Number(r[cAv])||0):0, upc: cU>=0?String(r[cU]||''):'' }; }
+        for (const r of data2){ if(!Array.isArray(r))continue;
+          if (useOnline && String(r[cLoc]||'').trim().toLowerCase()!=='online') continue;
+          const sku=String(r[cS]||'').trim(); const size=String(r[cSize]||'').trim(); if(!sku||!size)continue;
+          const av = cAv>=0?(Number(r[cAv])||0):0; const upc = cU>=0?String(r[cU]||''):'';
+          map[sku]=map[sku]||{}; const cur=map[sku][size]||{avail:0,upc:''}; cur.avail+=av; if(upc&&!cur.upc)cur.upc=upc; map[sku][size]=cur; }
         persist({ allocInv: map });
       });
       const onSim = (file) => parseSheet(file, (rows) => {
