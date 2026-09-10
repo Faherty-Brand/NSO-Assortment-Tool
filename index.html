@@ -3228,6 +3228,7 @@
       const [scaleOverride, setScaleOverride] = useState(ov.scaleOverride || {});
       const [forceSend, setForceSend] = useState(ov.forceSend || {});
       const [skuNotes, setSkuNotes] = useState(ov.skuNotes || {});
+      const [removeSkus, setRemoveSkus] = useState(ov.removeSkus || {}); // {sku:true} flagged for reserved removal
       const [l1F, setL1F] = useState({ filters:{}, sortCol:null, sortDir:1 });
       const [l2F, setL2F] = useState({ filters:{}, sortCol:null, sortDir:1 });
       const [pop, setPop] = useState(null); // {table,col,rect}
@@ -3237,7 +3238,7 @@
 
       const persist = (patch) => onDataChange({ ...data, ...patch });
       const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, sizeBias, targetOverride: (data.allocSettings && data.allocSettings.targetOverride) || false, ...next } });
-      const saveOverrides = (next) => persist({ allocOverrides: { depthAlt, scaleOverride, forceSend, skuNotes, ...next } });
+      const saveOverrides = (next) => persist({ allocOverrides: { depthAlt, scaleOverride, forceSend, skuNotes, removeSkus, ...next } });
       const biasToShift = (b) => b==='small' ? -0.5 : b==='large' ? 0.5 : 0;
       const saveCurve = (nextOverrides) => persist({ curveOverrides: nextOverrides });
 
@@ -3273,6 +3274,7 @@
       const simStores = (data.allocSimStores || []);
       const tracker = data.allocTracker || {};  // {sku:{oo,force,status}}
       const reservedUnits = data.reservedUnits || {};
+      const reservedBySize = data.reservedBySize || {};   // {styleColor: {size: {qty, upc}}}
       const stdCurves = data.stdCurves || null;   // {div|cat|sub: {scale: {size: units}}}
       const curveOverrides = data.curveOverrides || {};   // in-app edits layered on top of the file, same shape
 
@@ -3329,12 +3331,22 @@
         let cR = idxIncl(h => h.includes('reserve'));
         if (cR < 0) cR = idxIncl(h => h === 'qty' || h === 'quantity');
         if (cS < 0 || cR < 0) { alert('Reserved Units: need a SKU / Style-Color column and a Reserved / Reserve Qty column.'); return; }
+        // dedicated size + upc columns, if present
+        const cSz = idxIncl(h => h==='product size' || h==='size'), cU = idxIncl(h => h.includes('upc'));
         // style-color = STYLE-COLOR (first two hyphen tokens); anything after is the size
         const styleColor = (raw) => { const t = String(raw||'').trim().split('-'); return t.length > 2 ? t.slice(0,2).join('-') : t.join('-'); };
-        const map = {};
-        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; let sku=String(r[cS]||'').trim(); if(!sku)continue; if(stripSize) sku=styleColor(sku); const v=parseInt(r[cR])||0; if(v) map[sku]=(map[sku]||0)+v; }
+        const sizeFromWith = (raw) => { const t = String(raw||'').trim().split('-'); return t.length > 2 ? t.slice(2).join('-') : ''; };
+        const map = {}, bySize = {};
+        for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const raw=String(r[cS]||'').trim(); if(!raw)continue;
+          const sku = stripSize ? styleColor(raw) : raw;
+          const size = cSz>=0 ? String(r[cSz]||'').trim() : (stripSize ? sizeFromWith(raw) : '');
+          const upc = cU>=0 ? String(r[cU]||'').trim() : '';
+          const v = parseInt(r[cR])||0; if(!v) continue;
+          map[sku] = (map[sku]||0) + v;
+          if (size){ bySize[sku]=bySize[sku]||{}; const cur=bySize[sku][size]||{qty:0,upc:''}; cur.qty+=v; if(upc&&!cur.upc)cur.upc=upc; bySize[sku][size]=cur; }
+        }
         if (Object.keys(map).length === 0) { alert('Reserved Units: file parsed, but no rows had a positive reserve quantity. Check the Reserve Qty column.'); return; }
-        persist({ reservedUnits: map });
+        persist({ reservedUnits: map, reservedBySize: bySize });
       });
       const onSizeCurves = (file) => parseSheet(file, (rows) => {
         // Standard Size Curves file: header block of Division / Category / Sub rows above a 'Scale, #' row;
@@ -3516,6 +3528,7 @@
         {id:'Division',al:'left',val:i=>i.s.div,cat:1,fz:1},{id:'Category',al:'left',val:i=>i.s.cat,cat:1,fz:1},{id:'Sub-Category',al:'left',val:i=>i.s.sub,cat:1,fz:1},
         {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},
         {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},{id:'Status',al:'center',val:i=>i.st,cat:1},
+        {id:'Remove',al:'center',plain:1},
         {id:'Reserved',al:'right',val:i=>i.reservedSku},{id:'Target U',al:'right',val:i=>i.ideal},{id:'Net U',al:'right',val:i=>i.net},{id:'Final U',al:'right',val:i=>i.final},
         {id:'Notes',al:'left',plain:1},
         {id:'Sizes',al:'left',plain:1}
@@ -3621,6 +3634,40 @@
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), 'Category Summary');
         const nm = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
         XLSX.writeFile(wb, nm + '_Allocation.xlsx');
+      };
+
+      const handleReserveExport = (mode) => {
+        const store = (data.proFormaData && data.proFormaData.newStoreName) || 'Store';
+        const invM = inv || {};
+        const lines = []; let noUpc = 0; const seen = {};
+        const push = (sku,size,qty,action) => { if(qty<=0) return;
+          const upc = (invM[sku]&&invM[sku][size]&&invM[sku][size].upc) || (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].upc) || '';
+          if(!upc){ noUpc++; return; }
+          const row = { Store: store, UPC: upc, Qty: qty }; if(mode==='reconcile') row.Action = action; lines.push(row); };
+        // assortment SKUs — need per size from the demand curve; reserved from the file
+        eng.items.forEach(it => { const sku=it.s.sku; const flagged=!!removeSkus[sku];
+          it.cu.forEach(c => { const size=c.size; seen[sku+'|'+size]=1;
+            const need = flagged ? 0 : (c.ideal||0);
+            const reserved = (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].qty)||0;
+            if(mode==='scratch') push(sku,size, need, 'Add');
+            else if(mode==='topup') push(sku,size, Math.max(0,need-reserved), 'Add');
+            else if(mode==='removal') push(sku,size, Math.max(0,reserved-need), 'Remove');
+            else if(mode==='reconcile'){ const d=need-reserved; if(d>0) push(sku,size,d,'Add'); else if(d<0) push(sku,size,-d,'Remove'); }
+          });
+        });
+        // reserved for styles/sizes not in the assortment — remove in full (removal + reconcile)
+        if(mode==='removal'||mode==='reconcile'){
+          Object.keys(reservedBySize).forEach(sku => Object.keys(reservedBySize[sku]).forEach(size => { if(seen[sku+'|'+size])return;
+            push(sku,size, reservedBySize[sku][size].qty||0, 'Remove'); }));
+        }
+        if(lines.length===0){ alert('Nothing to export for this option'+(noUpc?' ('+noUpc+' line(s) skipped — no UPC in 42 Inventory).':'.')); return; }
+        const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(lines);
+        ws['!cols'] = [{wch:20},{wch:16},{wch:8}].concat(mode==='reconcile'?[{wch:9}]:[]);
+        XLSX.utils.book_append_sheet(wb, ws, 'Reserve');
+        const nm = String(store).replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
+        const mn = {scratch:'FromScratch',topup:'TopUp',removal:'Removal',reconcile:'Reconcile'}[mode];
+        XLSX.writeFile(wb, nm+'_Reserve_'+mn+'.xlsx');
+        if(noUpc) setTimeout(()=>alert(noUpc+' line(s) were skipped because no UPC was found in 42 Inventory for those sizes. Load 42 Inventory to include them.'),150);
       };
 
       const upBtn = (label, detail, loaded, onFile) => (
@@ -3773,6 +3820,37 @@
             })()}
           </div>
 
+          {/* Export Reserve Need */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Export Reserve Need</div>
+              <span className="text-xs text-gray-400">Store: {(data.proFormaData&&data.proFormaData.newStoreName)||'—'} · UPCs from 42 Inventory{Object.keys(reservedBySize).length?'':' · (size-level reserved not loaded)'}</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="border border-gray-200 rounded-lg p-3 flex flex-col">
+                <div className="text-xs font-semibold text-gray-800 mb-1">From Scratch</div>
+                <div className="text-[11px] text-gray-500 flex-1 mb-2">Full need (= target)</div>
+                <button onClick={()=>handleReserveExport('scratch')} className="px-2 py-1.5 bg-[#1C3554] text-white rounded text-xs font-semibold hover:opacity-90">Export</button>
+              </div>
+              <div className="border border-gray-200 rounded-lg p-3 flex flex-col">
+                <div className="text-xs font-semibold text-gray-800 mb-1">Top-Up</div>
+                <div className="text-[11px] text-gray-500 flex-1 mb-2">Shortfall only (Add)</div>
+                <button onClick={()=>handleReserveExport('topup')} className="px-2 py-1.5 bg-teal-600 text-white rounded text-xs font-semibold hover:opacity-90">Export</button>
+              </div>
+              <div className="border border-gray-200 rounded-lg p-3 flex flex-col">
+                <div className="text-xs font-semibold text-gray-800 mb-1">Removal</div>
+                <div className="text-[11px] text-gray-500 flex-1 mb-2">Over-reserved + flagged (Remove)</div>
+                <button onClick={()=>handleReserveExport('removal')} className="px-2 py-1.5 bg-rose-600 text-white rounded text-xs font-semibold hover:opacity-90">Export</button>
+              </div>
+              <div className="border-2 border-indigo-300 bg-indigo-50/40 rounded-lg p-3 flex flex-col">
+                <div className="text-xs font-semibold text-indigo-900 mb-1">Reconcile to Target</div>
+                <div className="text-[11px] text-indigo-700 flex-1 mb-2">Adds + removes in one file</div>
+                <button onClick={()=>handleReserveExport('reconcile')} className="px-2 py-1.5 bg-indigo-600 text-white rounded text-xs font-semibold hover:opacity-90">Export</button>
+              </div>
+            </div>
+            <div className="text-xs text-gray-400 mt-3">Each file is Store · UPC · Qty (Reconcile adds an Add/Remove action). Need = the size-level target; reserved counts toward it. Sizes with no UPC in inventory are skipped and reported.</div>
+          </div>
+
           {eng.noSignal && <div className="mb-3 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded px-3 py-2">No comp-sales signal (42 Sim Doors not loaded) — distributing Target by SKU count so units still respond to the target. Upload 42 Sim Doors for demand-weighted allocation.</div>}
           {/* LAYER 1 */}
           <div className="mb-2 flex items-baseline gap-2"><h3 className="text-lg font-bold text-gray-800">Layer 1 · Adjust to Target</h3><span className="text-xs text-gray-400">comp demand → raw units → min/max → sprinkle → depth · click a row to drill in</span></div>
@@ -3836,10 +3914,10 @@
           <div className="bg-white border border-gray-200 rounded-lg mb-4" style={{maxHeight:'70vh', overflow:'auto'}}>
             <table className="w-full text-xs" style={{borderCollapse:'separate', borderSpacing:0}}>
               <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L2COLS.map(c=>headerCell('L2',c,l2F))}</tr></thead>
-              <tbody>{l2items.length===0 ? <tr><td colSpan={14} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
+              <tbody>{l2items.length===0 ? <tr><td colSpan={15} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
                 const fzStyle = (id) => ({ position:'sticky', left:FZMAP[id].left, minWidth:FZMAP[id].w, width:FZMAP[id].w, maxWidth:FZMAP[id].w, overflow:'hidden', textOverflow:'ellipsis', background:'#fff', zIndex:5, borderBottom:'1px solid #eef0f2' });
                 return (
-                <tr key={it.s.sku+idx} className="align-middle">
+                <tr key={it.s.sku+idx} className={'align-middle'+(removeSkus[it.s.sku]?' opacity-50':'')}>
                   <td className="px-2 py-2 text-gray-600 whitespace-nowrap" style={fzStyle('Division')}>{it.s.div}</td>
                   <td className="px-2 py-2 whitespace-nowrap" style={fzStyle('Category')}>{it.s.cat}</td>
                   <td className="px-2 py-2 text-gray-600 whitespace-nowrap" style={fzStyle('Sub-Category')}>{it.s.sub}</td>
@@ -3853,17 +3931,26 @@
                   <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>
                     <button onClick={()=>{const f={...forceSend}; if(f[it.s.sku])delete f[it.s.sku]; else f[it.s.sku]=true; setForceSend(f); saveOverrides({forceSend:f});}} className={'rounded px-1.5 py-0.5 border mr-1 '+(it.forced?'bg-amber-600 text-white border-amber-600':'text-gray-500')} style={{fontSize:'11px'}}>Force</button>
                     <span className="rounded px-1.5 py-0.5" style={{fontSize:'11px', ...stBadge(it.st)}}>{it.st}</span></td>
+                  <td className={'px-2 py-2 text-center '+(removeSkus[it.s.sku]?'bg-rose-100':'')} style={{borderBottom:'1px solid #eef0f2'}}>
+                    <input type="checkbox" checked={!!removeSkus[it.s.sku]} onChange={()=>{const m={...removeSkus}; if(m[it.s.sku])delete m[it.s.sku]; else m[it.s.sku]=true; setRemoveSkus(m); saveOverrides({removeSkus:m});}} title="Flag this SKU's reserved units for removal" /></td>
                   <td className="px-3 py-2 text-right" style={{borderBottom:'1px solid #eef0f2'}}>{it.reservedSku>0 ? <span className="inline-block rounded-full bg-teal-600 text-white px-2 py-0.5" style={{fontSize:'10px',fontWeight:600}}>{fmt(it.reservedSku)}</span> : <span className="text-gray-300">—</span>}</td>
                   <td className="px-3 py-2 text-right text-gray-600" style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.ideal)}</td>
                   <td className="px-3 py-2 text-right text-gray-500" style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.net)}</td>
                   <td className={'px-3 py-2 text-right font-semibold bg-indigo-50 '+(it.isReserved?'text-teal-700':'text-indigo-700')} style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.final)}</td>
                   <td className="px-1 py-1" style={{borderBottom:'1px solid #eef0f2'}}>
                     <input type="text" value={skuNotes[it.s.sku]||''} placeholder="Add note…" onChange={e=>{const v=e.target.value; const nn={...skuNotes}; if(v) nn[it.s.sku]=v; else delete nn[it.s.sku]; setSkuNotes(nn); saveOverrides({skuNotes:nn});}} className={'px-1.5 py-1 border rounded text-xs '+(skuNotes[it.s.sku]?'border-amber-300 bg-amber-50':'border-gray-200')} style={{minWidth:150}} /></td>
-                  <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>(
-                    <td key={i} className="text-center px-1 py-0.5" style={{borderLeft:'1px solid #f1f5f9', background:r.req?'':'rgba(249,250,251,0.4)', minWidth:26}}>
+                  <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>{
+                    const tgt = cap?r.val:r.ideal;
+                    const rbs = reservedBySize[it.s.sku] && reservedBySize[it.s.sku][r.size] ? (reservedBySize[it.s.sku][r.size].qty||0) : 0;
+                    const showR = it.isReserved;
+                    let bg = r.req?'':'rgba(249,250,251,0.4)';
+                    if (showR) bg = (removeSkus[it.s.sku] || rbs>tgt) ? '#ffe4e6' : rbs<tgt ? '#ccfbf1' : '#f0fdf4';
+                    return (<td key={i} className="text-center px-1 py-0.5" style={{borderLeft:'1px solid #f1f5f9', background:bg, minWidth:26}}>
                       <div className="text-gray-400" style={{fontSize:'10px'}}>{r.size}</div>
-                      {r.flag!=='' ? <span className={r.flag==='X'?'text-red-600 font-bold':'text-gray-400 font-bold'}>{r.flag}</span> : <span>{cap?r.val:r.ideal}</span>}
-                    </td>))}</tr></tbody></table></td>
+                      {r.flag!=='' ? <span className={r.flag==='X'?'text-red-600 font-bold':'text-gray-400 font-bold'}>{r.flag}</span> : <span className="text-gray-700 font-semibold">{tgt}</span>}
+                      {showR && <div style={{marginTop:1}}><span className="inline-block rounded-full bg-teal-600 text-white" style={{padding:'0 5px',fontSize:'9px',fontWeight:700,lineHeight:'15px'}}>{rbs}</span></div>}
+                    </td>);
+                  })}</tr></tbody></table></td>
                 </tr>);
               })}</tbody>
             </table>
@@ -3873,7 +3960,7 @@
 
           <div className="flex justify-between border-t pt-4">
             <button onClick={()=>onPrev(4)} className="px-6 py-2 bg-gray-400 text-white rounded-md font-semibold hover:bg-gray-500">Previous</button>
-            <button onClick={()=>{ onDataChange({ ...data, allocSettings:{target,allocDate,openDate,weights,cap,sizeBias,targetOverride:(data.allocSettings&&data.allocSettings.targetOverride)||false}, allocOverrides:{depthAlt,scaleOverride,forceSend,skuNotes}, idealAllocation: eng.idealMap, allocationComplete:true }); onNext(6); }} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Depth Review</button>
+            <button onClick={()=>{ onDataChange({ ...data, allocSettings:{target,allocDate,openDate,weights,cap,sizeBias,targetOverride:(data.allocSettings&&data.allocSettings.targetOverride)||false}, allocOverrides:{depthAlt,scaleOverride,forceSend,skuNotes,removeSkus}, idealAllocation: eng.idealMap, allocationComplete:true }); onNext(6); }} className="px-6 py-2 bg-blue-600 text-white rounded-md font-semibold hover:bg-blue-700">Next: Depth Review</button>
           </div>
           {renderPop()}
         </div>
