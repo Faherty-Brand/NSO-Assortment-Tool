@@ -3270,6 +3270,7 @@
       }, [data.pstData, data.selectedDeliveries, data.selectedGroups, data.addedSkus, data.skuActions, scaleOverride]);
 
       const inv = data.allocInv || null;       // {sku:{size:{avail,upc}}}
+      const invMeta = data.allocInvMeta || {}; // {sku:{div,cat,sub,style,color}} — style-level fields from 42 Inventory
       const sim = data.allocSim || null;        // {combo:{store:units}}
       const simStores = (data.allocSimStores || []);
       const tracker = data.allocTracker || {};  // {sku:{oo,force,status}}
@@ -3311,17 +3312,20 @@
         if (cSize < 0) cSize = idxIncl(h => h.includes('size') && !h.includes('sku') && !h.includes('style'));
         const cAv = find('avail','available','on hand','stock','units'), cU = find('upc');
         const cLoc = idxIncl(h => h.includes('location type') || h==='location' || h==='channel');
+        const cDiv = idxIncl(h=>h.includes('division')||h==='department'), cCat = idxIncl(h=>h==='category'), cSub = idxIncl(h=>h.includes('sub-category')||h.includes('sub category')||h==='subcategory');
+        const cStyle = idxIncl(h=>h.includes('style desc')||h==='style'||h==='description'), cColor = idxIncl(h=>h.includes('color desc')||h==='color');
         if (cS < 0 || cSize < 0) { alert('42 Inventory: need SKU (style-color) and Size columns.'); return; }
         // if a Location Type column with "Online" rows exists, use only those as available-to-allocate; else use every row
         const data2 = rows.slice(hi+1);
         const useOnline = cLoc>=0 && data2.some(r=>Array.isArray(r) && String(r[cLoc]||'').trim().toLowerCase()==='online');
-        const map = {};
+        const map = {}, meta = {};
         for (const r of data2){ if(!Array.isArray(r))continue;
-          if (useOnline && String(r[cLoc]||'').trim().toLowerCase()!=='online') continue;
           const sku=String(r[cS]||'').trim(); const size=String(r[cSize]||'').trim(); if(!sku||!size)continue;
+          if (!meta[sku]) meta[sku] = { div:cDiv>=0?String(r[cDiv]||'').trim():'', cat:cCat>=0?String(r[cCat]||'').trim():'', sub:cSub>=0?String(r[cSub]||'').trim():'', style:cStyle>=0?String(r[cStyle]||'').trim():'', color:cColor>=0?String(r[cColor]||'').trim():'' };
+          if (useOnline && String(r[cLoc]||'').trim().toLowerCase()!=='online') continue;
           const av = cAv>=0?(Number(r[cAv])||0):0; const upc = cU>=0?String(r[cU]||''):'';
           map[sku]=map[sku]||{}; const cur=map[sku][size]||{avail:0,upc:''}; cur.avail+=av; if(upc&&!cur.upc)cur.upc=upc; map[sku][size]=cur; }
-        persist({ allocInv: map });
+        persist({ allocInv: map, allocInvMeta: meta });
       });
       const onSim = (file) => parseSheet(file, (rows) => {
         const { hi, find } = headerIndexer(rows);
@@ -3331,7 +3335,7 @@
         for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const div=nsoNormDept(String(r[cDiv]||'').trim()); const cat=String(r[cCat]||'').trim(); const sub=cSub>=0?String(r[cSub]||'').trim():'Other'; const u=Number(r[cU])||0; const loc=cLoc>=0?String(r[cLoc]||'').trim():'All'; if(!div||!cat)continue;
           stores.add(loc); const k=div+'|'+cat+'|'+sub; map[k]=map[k]||{}; map[k][loc]=(map[k][loc]||0)+u; }
         const storeArr=[...stores]; const w={}; storeArr.forEach(s=>{ w[s] = weights[s]!=null?weights[s]:Number((1/storeArr.length).toFixed(2)); });
-        setWeights(w); persist({ allocSim: map, allocSimStores: storeArr, allocSettings:{ target, allocDate, openDate, cap, weights:w } });
+        setWeights(w); persist({ allocSim: map, allocSimStores: storeArr, allocSettings:{ ...(data.allocSettings||{}), target, allocDate, openDate, cap, weights:w } });
       });
       const onReserved = (file) => parseSheet(file, (rows) => {
         const { hi, hdr } = headerIndexer(rows);
@@ -3658,34 +3662,63 @@
         const store = (data.proFormaData && data.proFormaData.newStoreName) || 'Store';
         const invM = inv || {};
         const lines = []; let noUpc = 0; const seen = {};
-        const push = (sku,size,qty,action) => { if(qty<=0) return;
+        const push = (info,qty,action) => { if(qty<=0) return; const sku=info.sku, size=info.size;
           const upc = (invM[sku]&&invM[sku][size]&&invM[sku][size].upc) || (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].upc) || '';
           if(!upc){ noUpc++; return; }
-          const row = { Store: store, UPC: upc, Qty: qty }; if(mode==='reconcile') row.Action = action; lines.push(row); };
+          const row = { Store: store, Division: info.div||'', Category: info.cat||'', 'Sub-Category': info.sub||'', SKU: sku, 'Style Description': info.style||'', 'Color Description': info.color||'', Size: size, UPC: upc, Qty: qty };
+          if(mode==='reconcile') row.Action = action; lines.push(row); };
         // assortment SKUs — need per size from the demand curve; reserved from the file
         eng.items.forEach(it => { const sku=it.s.sku; const flagged=!!removeSkus[sku];
           it.cu.forEach(c => { const size=c.size; seen[sku+'|'+size]=1;
             const need = flagged ? 0 : (c.ideal||0);
             const reserved = (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].qty)||0;
-            if(mode==='scratch') push(sku,size, need, 'Add');
-            else if(mode==='topup') push(sku,size, Math.max(0,need-reserved), 'Add');
-            else if(mode==='removal') push(sku,size, Math.max(0,reserved-need), 'Remove');
-            else if(mode==='reconcile'){ const d=need-reserved; if(d>0) push(sku,size,d,'Add'); else if(d<0) push(sku,size,-d,'Remove'); }
+            const info = { div:it.s.div, cat:it.s.cat, sub:it.s.sub, sku, style:it.s.style, color:it.s.color, size };
+            if(mode==='scratch') push(info, need, 'Add');
+            else if(mode==='topup') push(info, Math.max(0,need-reserved), 'Add');
+            else if(mode==='removal') push(info, Math.max(0,reserved-need), 'Remove');
+            else if(mode==='reconcile'){ const d=need-reserved; if(d>0) push(info,d,'Add'); else if(d<0) push(info,-d,'Remove'); }
           });
         });
         // reserved for styles/sizes not in the assortment — remove in full (removal + reconcile)
         if(mode==='removal'||mode==='reconcile'){
           Object.keys(reservedBySize).forEach(sku => Object.keys(reservedBySize[sku]).forEach(size => { if(seen[sku+'|'+size])return;
-            push(sku,size, reservedBySize[sku][size].qty||0, 'Remove'); }));
+            push({ sku, size, ...(invMeta[sku]||{}) }, reservedBySize[sku][size].qty||0, 'Remove'); }));
         }
         if(lines.length===0){ alert('Nothing to export for this option'+(noUpc?' ('+noUpc+' line(s) skipped — no UPC in 42 Inventory).':'.')); return; }
         const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(lines);
-        ws['!cols'] = [{wch:20},{wch:16},{wch:8}].concat(mode==='reconcile'?[{wch:9}]:[]);
+        ws['!cols'] = [{wch:20},{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:9},{wch:16},{wch:8}].concat(mode==='reconcile'?[{wch:9}]:[]);
         XLSX.utils.book_append_sheet(wb, ws, 'Reserve');
         const nm = String(store).replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
         const mn = {scratch:'FromScratch',topup:'TopUp',removal:'Removal',reconcile:'Reconcile'}[mode];
         XLSX.writeFile(wb, nm+'_Reserve_'+mn+'.xlsx');
         if(noUpc) setTimeout(()=>alert(noUpc+' line(s) were skipped because no UPC was found in 42 Inventory for those sizes. Load 42 Inventory to include them.'),150);
+      };
+
+      const handleSizeExport = () => {
+        const rows = [];
+        l2items.forEach(it => { const sku=it.s.sku;
+          it.cu.forEach(c => { const size=c.size;
+            const tgt = c.ideal||0;
+            const rbs = (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].qty)||0;
+            const av = inv && inv[sku] && inv[sku][size] ? (inv[sku][size].avail||0) : '';
+            const upc = (inv&&inv[sku]&&inv[sku][size]&&inv[sku][size].upc) || (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].upc) || '';
+            rows.push({
+              Division: it.s.div, Category: it.s.cat, 'Sub-Category': it.s.sub,
+              SKU: sku, 'Style Description': it.s.style, 'Color Description': it.s.color,
+              Scale: it.s.scale, Status: it.st, 'Next In-DC': (tracker[sku]&&tracker[sku].inDc)||'',
+              Size: size, UPC: upc,
+              'Target Units': tgt, 'Reserved Units': rbs, 'Whse Available': av,
+              'Net Units': Math.max(0, tgt-rbs), 'Final Units': it.isReserved ? rbs : tgt,
+              Remove: removeSkus[sku]?'Y':'', Notes: skuNotes[sku]||''
+            });
+          });
+        });
+        if (!rows.length){ alert('No size-level rows to export.'); return; }
+        const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(rows);
+        ws['!cols'] = [{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:12},{wch:16},{wch:10},{wch:9},{wch:15},{wch:11},{wch:13},{wch:13},{wch:10},{wch:11},{wch:8},{wch:24}];
+        XLSX.utils.book_append_sheet(wb, ws, 'Size-Level Allocation');
+        const nm = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
+        XLSX.writeFile(wb, nm + '_SizeLevel_Allocation.xlsx');
       };
 
       const upBtn = (label, detail, loaded, onFile) => (
@@ -3927,6 +3960,7 @@
                 <button onClick={()=>setResFilter('free')} className={'px-3 py-1.5 border-l '+(resFilter==='free'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>Not reserved <span className="opacity-70">{freeCount}</span></button>
               </div>
               <span className="text-xs text-gray-400">{l2items.length} shown</span>
+              <button onClick={handleSizeExport} className="px-3 py-1.5 bg-green-600 text-white rounded-md text-xs font-semibold hover:bg-green-700">Export sizes</button>
             </div>
           </div>
           <div className="bg-white border border-gray-200 rounded-lg mb-4" style={{maxHeight:'70vh', overflow:'auto'}}>
