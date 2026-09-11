@@ -3402,8 +3402,7 @@
           if(cs||ns){ oo=[cs,ns].filter(Boolean).sort()[0]; }
           else if(cOO>=0 && toISO(r[cOO])){ oo=toISO(r[cOO]); }
           else if(cInDC>=0 && toISO(r[cInDC])){ oo=toISO(r[cInDC]); }                       // ISR: Next In-DC (exact arrival date)
-          else if(cDelv>=0){ const yh=cYr>=0?((String(r[cYr]).match(/(20\d{2})/)||[])[1]):null; oo=windowToISO(r[cDelv], yh?+yh:null); }  // fallback: Delivery window -> ~mid-month
-          if(!oo) oo='N/A';
+          if(!oo) oo='N/A';   // no confirmed inbound (CS/NS OO or Next In-DC) → N/A → Broken, no Replen for status
           const rawSt = cSt>=0?String(r[cSt]||'').trim():'';
           map[sku]={ oo, inDc: cInDC>=0?toISO(r[cInDC]):'', force: cF>=0 ? (String(r[cF]||'').trim().toUpperCase()==='X' || String(r[cF]).toLowerCase()==='true') : false, status: KNOWN_ST.includes(rawSt)?rawSt:'', delivery: cDelv>=0?String(r[cDelv]||'').trim():'' }; }
         persist({ allocTracker: map });
@@ -3504,14 +3503,16 @@
           const net = Math.max(0, (cap?capTot:idealTot) - reservedSku);   // target − reserved
           const finalU = isReserved ? reservedSku : idealTot;             // canonical: reserved ? reserved : target
           // broken: any required size with no availability (+reserved) when inventory present
-          let broken = false; if (inv){ broken = cu.some(r => r.req && ((availBySize?(availBySize[r.size]||0):0) + 0) < 1); }
+          // broken = any WANTED size (target>0, net of reserved) we can't fulfill from available inventory
+          let broken = false;
+          if (inv){ broken = cu.some(r => { const avz = availBySize?(availBySize[r.size]||0):0; const rvz=(reservedBySize[s.sku]&&reservedBySize[s.sku][r.size]&&reservedBySize[s.sku][r.size].qty)||0; const nd=Math.max(0,(r.ideal||0)-rvz); return nd>0 && avz<nd; }); }
           const st = statusOf(s.sku, broken);
           idealMap[s.sku] = idealTot;
           finalActual += finalU;
           items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, isReserved, final:finalU, st, forced: !!forceSend[s.sku] });
         }); });
         return { rows, items, idealMap, reservedPool, totalTarget: rows.reduce((a,r)=>a+r.final,0), totalFinal: finalActual, noSignal };
-      }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits, data.stdCurves, data.curveOverrides, sizeBias]);
+      }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits, data.reservedBySize, data.stdCurves, data.curveOverrides, sizeBias]);
 
       // persist idealAllocation when it changes (guarded to avoid loops)
       const lastIdeal = useRef('');
@@ -3961,9 +3962,9 @@
                     const tgt = r.ideal;   // always the true demand target — availability is shown via whse + amber, not by capping the number
                     const rbs = reservedBySize[it.s.sku] && reservedBySize[it.s.sku][r.size] ? (reservedBySize[it.s.sku][r.size].qty||0) : 0;
                     const hasR = it.isReserved && reservedBySize[it.s.sku] && Object.keys(reservedBySize[it.s.sku]).length>0;
-                    const av = inv && inv[it.s.sku] && inv[it.s.sku][r.size] ? (inv[it.s.sku][r.size].avail||0) : null;
+                    const av = inv ? (inv[it.s.sku] && inv[it.s.sku][r.size] ? (inv[it.s.sku][r.size].avail||0) : 0) : null;
                     const need = Math.max(0, tgt-rbs);                          // units still needed (target − reserved)
-                    const gap = inv && av!=null && need>0 && av<need;           // warehouse can't cover the need
+                    const gap = av!=null && need>0 && av<need;                  // warehouse can't cover the need
                     let bg = r.req?'':'rgba(249,250,251,0.4)';
                     if (hasR) {
                       if (removeSkus[it.s.sku] || rbs>tgt) bg='#ffe4e6';        // over / flagged → remove
