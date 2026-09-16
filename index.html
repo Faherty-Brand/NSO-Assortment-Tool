@@ -3264,7 +3264,7 @@
           if (!r.sku || dedup.has(r.sku)) return; dedup.add(r.sku);
           const scale = scaleOverride[r.sku] || r.sizeScale || '';
           out.push({ sku:r.sku, div:nsoNormDept(r.department||'Other'), cat:r.category||'Other', sub:r.subcategory||'Other',
-            style:r.styleDescription||r.style||'', color:r.colorDescription||'', baseScale:r.sizeScale||'', scale });
+            style:r.styleDescription||r.style||'', color:r.colorDescription||'', storeTier:r.storeTier||'', baseScale:r.sizeScale||'', scale });
         });
         return out;
       }, [data.pstData, data.selectedDeliveries, data.selectedGroups, data.addedSkus, data.skuActions, scaleOverride]);
@@ -3543,11 +3543,11 @@
         {id:'Demand %',al:'right',val:r=>(r.demand*100).toFixed(1)},{id:'Raw U',al:'right',val:r=>Math.round(r.raw)},{id:'Min U',al:'right',val:r=>r.minU},{id:'Max U',al:'right',val:r=>r.maxU},
         {id:'Sprinkled',al:'right',val:r=>r.sprinkled},{id:'Target U',al:'right',val:r=>r.final},{id:'Depth Alt',al:'center',input:1},{id:'Depth',al:'right',val:r=>r.depth.toFixed(1)},{id:'% TTL',al:'right',val:r=>target?((r.final/target*100).toFixed(0)):'0'}
       ];
-      const FZ = [['Division',68],['Category',92],['Sub-Category',96],['SKU',112],['Style Description',150],['Color Description',108]];
+      const FZ = [['Division',68],['Category',92],['Sub-Category',96],['SKU',112],['Style Description',150],['Color Description',108],['Store Tier',72]];
       const FZMAP = {}; { let l=0; FZ.forEach(([id,w])=>{ FZMAP[id]={left:l,w}; l+=w; }); }
       const L2COLS = [
         {id:'Division',al:'left',val:i=>i.s.div,cat:1,fz:1},{id:'Category',al:'left',val:i=>i.s.cat,cat:1,fz:1},{id:'Sub-Category',al:'left',val:i=>i.s.sub,cat:1,fz:1},
-        {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},
+        {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},{id:'Store Tier',al:'left',val:i=>i.s.storeTier,cat:1,fz:1},
         {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},{id:'Status',al:'center',val:i=>i.st,cat:1},
         {id:'Next In-DC',al:'center',plain:1},
         {id:'Remove',al:'center',plain:1},
@@ -3966,7 +3966,7 @@
           <div className="bg-white border border-gray-200 rounded-lg mb-4" style={{maxHeight:'70vh', overflow:'auto'}}>
             <table className="w-full text-xs" style={{borderCollapse:'separate', borderSpacing:0}}>
               <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L2COLS.map(c=>headerCell('L2',c,l2F))}</tr></thead>
-              <tbody>{l2items.length===0 ? <tr><td colSpan={16} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
+              <tbody>{l2items.length===0 ? <tr><td colSpan={17} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
                 const fzStyle = (id) => ({ position:'sticky', left:FZMAP[id].left, minWidth:FZMAP[id].w, width:FZMAP[id].w, maxWidth:FZMAP[id].w, overflow:'hidden', textOverflow:'ellipsis', background:'#fff', zIndex:5, borderBottom:'1px solid #eef0f2' });
                 return (
                 <tr key={it.s.sku+idx} className={'align-middle'+(removeSkus[it.s.sku]?' opacity-50':'')}>
@@ -3976,6 +3976,7 @@
                   <td className="px-2 py-2 text-gray-500 whitespace-nowrap" style={fzStyle('SKU')}>{it.s.sku}</td>
                   <td className="px-2 py-2 font-medium whitespace-nowrap" style={fzStyle('Style Description')}>{it.s.style}</td>
                   <td className="px-2 py-2 text-gray-600 whitespace-nowrap" style={fzStyle('Color Description')}>{it.s.color}</td>
+                  <td className="px-2 py-2 text-gray-600 whitespace-nowrap" style={fzStyle('Store Tier')}>{it.s.storeTier}</td>
                   <td className="px-2 py-2 text-center" style={{borderBottom:'1px solid #eef0f2'}}>
                     <select value={it.s.scale} onChange={e=>{const o={...scaleOverride,[it.s.sku]:e.target.value}; setScaleOverride(o); saveOverrides({scaleOverride:o});}} className={'border rounded px-1 py-0.5 text-xs '+(scaleOverride[it.s.sku]?'border-amber-400 text-amber-700':'')}>
                       {Object.keys(NSO_SCALES).map(n=> <option key={n} value={n}>{n}</option>)}
