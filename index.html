@@ -845,7 +845,7 @@
       return out;
     };
     const NSO_MATRIX_URL = 'https://script.google.com/a/macros/fahertybrand.com/s/AKfycby8Z67jCeRScKJRxQHJfxd_Hnzw6USsNbTnu0pA9xd5xAEVMV0fIorwaZe0AoCJa0PB/exec';
-    const nsoSMM = (name) => { const a = NSO_SCALES[name]; if (!a) return [0,0]; const mx = a.reduce((x,r)=>x+r[3],0); const mn = Math.min(a.length===1 ? 3 : Math.floor(a.length*1.5), mx); return [mn, mx]; };
+    const nsoSMM = (name) => { const a = NSO_SCALES[name]; if (!a) return [0,0]; const mx = a.reduce((x,r)=>x+r[3],0); const mn = Math.min(a.length===1 ? 3 : Math.floor(a.length*1.3), mx); return [mn, mx]; };
     // size ordering axis for the runs-small/large shift: waist for pants (32WX30L→32), the number for numeric scales, else alpha order
     const NSO_ALPHA = ['XXS','XS','S','M','L','XL','XXL','XXXL'];
     const nsoSizeRank = (label) => {
