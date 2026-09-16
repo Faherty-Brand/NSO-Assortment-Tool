@@ -4052,6 +4052,12 @@
       const [idealAllocation, setIdealAllocation] = useState(data.idealAllocation || {});
       const [reservedUnits, setReservedUnits] = useState(data.reservedUnits || {});
       const [dataLoaded, setDataLoaded] = useState(Object.keys(data.reservedUnits || {}).length > 0 || Object.keys(data.idealAllocation || {}).length > 0);
+      // keep in sync with the Allocation tab: when Target/reserved change there, reflect them here instead of holding a stale snapshot
+      useEffect(() => {
+        const ia = data.idealAllocation || {}, ru = data.reservedUnits || {};
+        setIdealAllocation(ia); setReservedUnits(ru);
+        if (Object.keys(ia).length || Object.keys(ru).length) setDataLoaded(true);
+      }, [data.idealAllocation, data.reservedUnits]);
       const fileRef = useRef(null);
 
       const handleFileUpload = (e) => {
