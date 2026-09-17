@@ -3236,6 +3236,7 @@
       const [expCat, setExpCat] = useState({});
       const [resFilter, setResFilter] = useState('all'); // all | reserved | free
       const [wrapText, setWrapText] = useState(false);   // wrap long text in the frozen identifier columns
+      const [compact, setCompact] = useState(false);     // compact density for the size-level table
 
       const persist = (patch) => onDataChange({ ...data, ...patch });
       const saveSettings = (next) => persist({ allocSettings: { target, allocDate, openDate, weights, cap, sizeBias, targetOverride: (data.allocSettings && data.allocSettings.targetOverride) || false, ...next } });
@@ -3549,10 +3550,11 @@
       const L2COLS = [
         {id:'Division',al:'left',val:i=>i.s.div,cat:1,fz:1},{id:'Category',al:'left',val:i=>i.s.cat,cat:1,fz:1},{id:'Sub-Category',al:'left',val:i=>i.s.sub,cat:1,fz:1},
         {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},{id:'Store Tier',al:'left',val:i=>i.s.storeTier,cat:1,fz:1},
-        {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},{id:'Status',al:'center',val:i=>i.st,cat:1},
+        {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},
         {id:'Next In-DC',al:'center',plain:1},
         {id:'Remove',al:'center',plain:1},
         {id:'Reserved',al:'right',val:i=>i.reservedSku},{id:'Target U',al:'right',val:i=>i.ideal},{id:'Net U',al:'right',val:i=>i.net},{id:'Final U',al:'right',val:i=>i.final},
+        {id:'Status',al:'center',val:i=>i.st,cat:1},
         {id:'Notes',al:'left',plain:1},
         {id:'Sizes',al:'left',plain:1}
       ];
@@ -3689,6 +3691,7 @@
         if(lines.length===0){ alert('Nothing to export for this option'+(noUpc?' ('+noUpc+' line(s) skipped — no UPC in 42 Inventory).':'.')); return; }
         const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(lines);
         ws['!cols'] = [{wch:20},{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:9},{wch:16},{wch:8}].concat(mode==='reconcile'?[{wch:9}]:[]);
+        (function(){ const rng=XLSX.utils.decode_range(ws['!ref']); for(let R=rng.s.r+1;R<=rng.e.r;R++){ const ref=XLSX.utils.encode_cell({r:R,c:8}); const cell=ws[ref]; if(cell&&cell.v!=null&&cell.v!==''){ cell.t='s'; cell.v=String(cell.v); cell.z='@'; } } })();
         XLSX.utils.book_append_sheet(wb, ws, 'Reserve');
         const nm = String(store).replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
         const mn = {scratch:'FromScratch',topup:'TopUp',removal:'Removal',reconcile:'Reconcile'}[mode];
@@ -3718,6 +3721,7 @@
         if (!rows.length){ alert('No size-level rows to export.'); return; }
         const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(rows);
         ws['!cols'] = [{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:12},{wch:16},{wch:10},{wch:9},{wch:15},{wch:11},{wch:13},{wch:13},{wch:10},{wch:11},{wch:8},{wch:24}];
+        (function(){ const rng=XLSX.utils.decode_range(ws['!ref']); for(let R=rng.s.r+1;R<=rng.e.r;R++){ const ref=XLSX.utils.encode_cell({r:R,c:10}); const cell=ws[ref]; if(cell&&cell.v!=null&&cell.v!==''){ cell.t='s'; cell.v=String(cell.v); cell.z='@'; } } })();
         XLSX.utils.book_append_sheet(wb, ws, 'Size-Level Allocation');
         const nm = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
         XLSX.writeFile(wb, nm + '_SizeLevel_Allocation.xlsx');
@@ -3962,11 +3966,16 @@
                 <button onClick={()=>setResFilter('free')} className={'px-3 py-1.5 border-l '+(resFilter==='free'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>Not reserved <span className="opacity-70">{freeCount}</span></button>
               </div>
               <span className="text-xs text-gray-400">{l2items.length} shown</span>
+              <button onClick={()=>setCompact(v=>!v)} className={'px-3 py-1.5 rounded-md text-xs font-semibold border '+(compact?'bg-[#1C3554] text-white border-[#1C3554]':'bg-white text-gray-600 border-gray-300 hover:bg-gray-50')}>Compact</button>
               <button onClick={()=>setWrapText(v=>!v)} className={'px-3 py-1.5 rounded-md text-xs font-semibold border '+(wrapText?'bg-[#1C3554] text-white border-[#1C3554]':'bg-white text-gray-600 border-gray-300 hover:bg-gray-50')}>Wrap text</button>
               <button onClick={handleSizeExport} className="px-3 py-1.5 bg-green-600 text-white rounded-md text-xs font-semibold hover:bg-green-700">Export sizes</button>
             </div>
           </div>
-          <div className="bg-white border border-gray-200 rounded-lg mb-4" style={{maxHeight:'70vh', overflow:'auto'}}>
+          <div className={'bg-white border border-gray-200 rounded-lg mb-4'+(compact?' l2-compact':'')} style={{maxHeight:'70vh', overflow:'auto'}}>
+            <style>{`.l2-compact td, .l2-compact th{padding-top:2px !important;padding-bottom:2px !important;padding-left:5px !important;padding-right:5px !important;}
+            .l2-compact table.inline-table td{padding-top:1px !important;padding-bottom:1px !important;}
+            .l2-compact select,.l2-compact input[type=text]{padding-top:0 !important;padding-bottom:0 !important;}
+            .l2-compact input[type=text]{min-width:110px !important;}`}</style>
             <table className="w-full text-xs" style={{borderCollapse:'separate', borderSpacing:0}}>
               <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L2COLS.map(c=>headerCell('L2',c,l2F))}</tr></thead>
               <tbody>{l2items.length===0 ? <tr><td colSpan={17} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
@@ -3984,9 +3993,6 @@
                     <select value={it.s.scale} onChange={e=>{const o={...scaleOverride,[it.s.sku]:e.target.value}; setScaleOverride(o); saveOverrides({scaleOverride:o});}} className={'border rounded px-1 py-0.5 text-xs '+(scaleOverride[it.s.sku]?'border-amber-400 text-amber-700':'')}>
                       {Object.keys(NSO_SCALES).map(n=> <option key={n} value={n}>{n}</option>)}
                     </select></td>
-                  <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>
-                    <button onClick={()=>{const f={...forceSend}; if(f[it.s.sku])delete f[it.s.sku]; else f[it.s.sku]=true; setForceSend(f); saveOverrides({forceSend:f});}} className={'rounded px-1.5 py-0.5 border mr-1 '+(it.forced?'bg-amber-600 text-white border-amber-600':'text-gray-500')} style={{fontSize:'11px'}}>Force</button>
-                    <span className="rounded px-1.5 py-0.5" style={{fontSize:'11px', ...stBadge(it.st)}}>{it.st}</span></td>
                   <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>{(() => { const t=tracker[it.s.sku]||{}; if(t.inDc){ const dt=new Date(t.inDc+'T00:00:00'); if(!isNaN(dt)) return <span className="text-gray-600" style={{fontSize:'11px'}}>{(dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(2)}</span>; } return <span className="text-gray-300">—</span>; })()}</td>
                   <td className={'px-2 py-2 text-center '+(removeSkus[it.s.sku]?'bg-rose-100':'')} style={{borderBottom:'1px solid #eef0f2'}}>
                     <input type="checkbox" checked={!!removeSkus[it.s.sku]} onChange={()=>{const m={...removeSkus}; if(m[it.s.sku])delete m[it.s.sku]; else m[it.s.sku]=true; setRemoveSkus(m); saveOverrides({removeSkus:m});}} title="Flag this SKU's reserved units for removal" /></td>
@@ -3994,6 +4000,9 @@
                   <td className="px-3 py-2 text-right text-gray-600" style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.ideal)}</td>
                   <td className="px-3 py-2 text-right text-gray-500" style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.net)}</td>
                   <td className={'px-3 py-2 text-right font-semibold bg-indigo-50 '+(it.isReserved?'text-teal-700':'text-indigo-700')} style={{borderBottom:'1px solid #eef0f2'}}>{fmt(it.final)}</td>
+                  <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>
+                    <button onClick={()=>{const f={...forceSend}; if(f[it.s.sku])delete f[it.s.sku]; else f[it.s.sku]=true; setForceSend(f); saveOverrides({forceSend:f});}} className={'rounded px-1.5 py-0.5 border mr-1 '+(it.forced?'bg-amber-600 text-white border-amber-600':'text-gray-500')} style={{fontSize:'11px'}}>Force</button>
+                    <span className="rounded px-1.5 py-0.5" style={{fontSize:'11px', ...stBadge(it.st)}}>{it.st}</span></td>
                   <td className="px-1 py-1" style={{borderBottom:'1px solid #eef0f2'}}>
                     <input type="text" value={skuNotes[it.s.sku]||''} placeholder="Add note…" onChange={e=>{const v=e.target.value; const nn={...skuNotes}; if(v) nn[it.s.sku]=v; else delete nn[it.s.sku]; setSkuNotes(nn); saveOverrides({skuNotes:nn});}} className={'px-1.5 py-1 border rounded text-xs '+(skuNotes[it.s.sku]?'border-amber-300 bg-amber-50':'border-gray-200')} style={{minWidth:150}} /></td>
                   <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>{
