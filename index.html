@@ -3673,11 +3673,12 @@
           it.cu.forEach(c => { const size=c.size; seen[sku+'|'+size]=1;
             const need = flagged ? 0 : (c.ideal||0);
             const reserved = (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].qty)||0;
+            const av = (invM[sku]&&invM[sku][size]) ? (invM[sku][size].avail||0) : Infinity;   // cap Add at what's actually available to pull
             const info = { div:it.s.div, cat:it.s.cat, sub:it.s.sub, sku, style:it.s.style, color:it.s.color, size };
-            if(mode==='scratch') push(info, need, 'Add');
-            else if(mode==='topup') push(info, Math.max(0,need-reserved), 'Add');
+            if(mode==='scratch') push(info, Math.min(need, av), 'Add');
+            else if(mode==='topup') push(info, Math.min(Math.max(0,need-reserved), av), 'Add');
             else if(mode==='removal') push(info, Math.max(0,reserved-need), 'Remove');
-            else if(mode==='reconcile'){ const d=need-reserved; if(d>0) push(info,d,'Add'); else if(d<0) push(info,-d,'Remove'); }
+            else if(mode==='reconcile'){ const d=need-reserved; if(d>0) push(info, Math.min(d,av), 'Add'); else if(d<0) push(info,-d,'Remove'); }
           });
         });
         // reserved for styles/sizes not in the assortment — remove in full (removal + reconcile)
