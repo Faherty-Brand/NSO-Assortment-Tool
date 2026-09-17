@@ -6086,13 +6086,14 @@
         return false;
       };
 
+      const [navCollapsed, setNavCollapsed] = useState(false);
+
       // Dashboard view
       if (view === 'dashboard') {
         return <Dashboard onOpenProject={handleOpenProject} onNewProject={handleNewProject} />;
       }
 
       // Project view
-      const [navCollapsed, setNavCollapsed] = useState(false);
       const storeName = appData.proFormaData?.newStoreName || 'New Store';
 
       return (
