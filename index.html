@@ -2349,6 +2349,7 @@
       const [skuInputMode, setSkuInputMode] = useState('Add');
       const [undoStack, setUndoStack] = useState([]);
       const [forceAdd, setForceAdd] = useState(false);
+      const [pendingForceAdd, setPendingForceAdd] = useState([]);
 
       // build an entry for a SKU that isn't in the PST — pull metadata + infer a scale from 42 Inventory when available
       const nsoInferScale = (sku) => {
@@ -2651,6 +2652,18 @@
         setAddSkuInput('');
         const msg = applied + ' SKU(s) set to ' + skuInputMode + (forced > 0 ? ' (' + forced + ' force-added — not in PST; set a size scale in Allocation if it didn\'t auto-detect)' : '') + (errors.length > 0 ? '. Not found: ' + errors.slice(0, 10).join(', ') + (errors.length > 10 ? '...' : '') : '');
         if (errors.length > 0 || applied > 1 || forced > 0) setAddSkuError(msg);
+        setPendingForceAdd(skuInputMode === 'Add' && errors.length > 0 ? errors : []);
+      };
+
+      const handleForcePending = () => {
+        if (!pendingForceAdd.length) return;
+        setUndoStack(prev => [...prev, { skuActions: { ...skuActions }, addedSkus: [...addedSkus] }]);
+        const newAdded = [...addedSkus]; const updatedActions = { ...skuActions };
+        pendingForceAdd.forEach(sku => { if (!newAdded.find(r => r.sku === sku)) newAdded.push(nsoForcedEntry(sku)); updatedActions[sku] = 'Add'; });
+        setAddedSkus(newAdded); setSkuActions(updatedActions);
+        onDataChange({ ...data, skuActions: updatedActions, skuNotes, divisionSignoffs, skuTargets, addedSkus: newAdded });
+        setAddSkuError(pendingForceAdd.length + ' SKU(s) force-added (not in PST — set a size scale in Allocation if it didn\'t auto-detect).');
+        setPendingForceAdd([]);
       };
 
       // Net SKU count per department (Keep + Add only, from baseData not filteredData)
@@ -2922,7 +2935,7 @@
                 Force add (include SKUs not in PST)
               </label>
             )}
-            {addSkuError && <div className="text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded">{addSkuError}</div>}
+            {addSkuError && <div className="text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded flex items-center justify-between gap-2 flex-wrap"><span>{addSkuError}</span>{pendingForceAdd.length > 0 && <button onClick={handleForcePending} className="px-2 py-1 bg-green-600 text-white rounded text-xs font-semibold whitespace-nowrap hover:bg-green-700">＋ Add these {pendingForceAdd.length} anyway</button>}</div>}
 
             {/* Search PST panel */}
             {showSearch && (
@@ -3299,7 +3312,7 @@
           if (!r.sku || dedup.has(r.sku)) return; dedup.add(r.sku);
           const scale = scaleOverride[r.sku] || r.sizeScale || '';
           out.push({ sku:r.sku, div:nsoNormDept(r.department||'Other'), cat:r.category||'Other', sub:r.subcategory||'Other',
-            style:r.styleDescription||r.style||'', color:r.colorDescription||'', storeTier:r.storeTier||'', baseScale:r.sizeScale||'', scale });
+            style:r.styleDescription||r.style||'', color:r.colorDescription||'', storeTier:r.storeTier||'', deliveryMonth:r.deliveryMonth||'', baseScale:r.sizeScale||'', scale });
         });
         return out;
       }, [data.pstData, data.selectedDeliveries, data.selectedGroups, data.addedSkus, data.skuActions, scaleOverride]);
@@ -3584,11 +3597,13 @@
         {id:'Division',al:'left',val:i=>i.s.div,cat:1,fz:1},{id:'Category',al:'left',val:i=>i.s.cat,cat:1,fz:1},{id:'Sub-Category',al:'left',val:i=>i.s.sub,cat:1,fz:1},
         {id:'SKU',al:'left',val:i=>i.s.sku,cat:1,fz:1},{id:'Style Description',al:'left',val:i=>i.s.style,cat:1,fz:1},{id:'Color Description',al:'left',val:i=>i.s.color,cat:1,fz:1},{id:'Store Tier',al:'left',val:i=>i.s.storeTier,cat:1,fz:1},
         {id:'Scale',al:'center',val:i=>i.s.scale,cat:1},
-        {id:'Next In-DC',al:'center',plain:1},
-        {id:'Remove',al:'center',plain:1},
+        {id:'Delivery',al:'center',cat:1,val:i=>i.s.deliveryMonth||'—'},
+        {id:'Next In-DC',al:'center',cat:1,val:i=>{const t=tracker[i.s.sku]; return t&&t.inDc?t.inDc:'—';}},
+        {id:'Remove',al:'center',cat:1,val:i=>removeSkus[i.s.sku]?'Yes':'No'},
         {id:'Reserved',al:'right',val:i=>i.reservedSku},{id:'Target U',al:'right',val:i=>i.ideal},{id:'Net U',al:'right',val:i=>i.net},{id:'Final U',al:'right',val:i=>i.final},
         {id:'Status',al:'center',val:i=>i.st,cat:1},
-        {id:'Notes',al:'left',plain:1},
+        {id:'Review Notes',al:'left',cat:1,val:i=>(data.skuNotes&&data.skuNotes[i.s.sku])||'—'},
+        {id:'Notes',al:'left',cat:1,val:i=>skuNotes[i.s.sku]?'Has note':'—'},
         {id:'Sizes',al:'left',plain:1}
       ];
       L2COLS.forEach(c => { if (FZMAP[c.id]){ c.left=FZMAP[c.id].left; c.w=FZMAP[c.id].w; } });
@@ -3612,7 +3627,7 @@
         const cols = pop.table==='L1'?L1COLS:L2COLS; const c = cols.find(x=>x.id===pop.col); if(!c) return null;
         const F = pop.table==='L1'?l1F:l2F; const setF = pop.table==='L1'?setL1F:setL2F;
         const allRows = pop.table==='L1'?eng.rows:eng.items;
-        const vals = c.cat ? distinct(allRows, c.val) : [];
+        const vals = c.val ? distinct(allRows, c.val) : [];
         const cur = F.filters[c.id] || null;
         const close = ()=>setPop(null);
         const setSort = (dir)=>{ setF({...F, sortCol:c.id, sortDir:dir}); close(); };
@@ -3621,8 +3636,8 @@
             <button onClick={()=>setSort(1)} className="flex-1 border rounded px-2 py-1 hover:bg-gray-50">Sort {'\u2191'}</button>
             <button onClick={()=>setSort(-1)} className="flex-1 border rounded px-2 py-1 hover:bg-gray-50">Sort {'\u2193'}</button>
           </div>
-          {c.cat ? <PopChecklist vals={vals} cur={cur} onApply={(sel)=>{ const f={...F.filters}; if(!sel||sel.length===0||sel.length===vals.length) delete f[c.id]; else f[c.id]=sel; setF({...F, filters:f}); close(); }} onClear={()=>{ const f={...F.filters}; delete f[c.id]; setF({...F, filters:f}); close(); }} />
-            : <div className="px-3 py-2 text-xs text-gray-400">Numeric column — use sort.</div>}
+          {(c.val && vals.length) ? <PopChecklist vals={vals} cur={cur} onApply={(sel)=>{ const f={...F.filters}; if(!sel||sel.length===0||sel.length===vals.length) delete f[c.id]; else f[c.id]=sel; setF({...F, filters:f}); close(); }} onClear={()=>{ const f={...F.filters}; delete f[c.id]; setF({...F, filters:f}); close(); }} />
+            : <div className="px-3 py-2 text-xs text-gray-400">Sort only for this column.</div>}
         </div></>;
       };
 
@@ -4011,7 +4026,7 @@
             .l2-compact input[type=text]{min-width:110px !important;}`}</style>
             <table className="w-full text-xs" style={{borderCollapse:'separate', borderSpacing:0}}>
               <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide"><tr>{L2COLS.map(c=>headerCell('L2',c,l2F))}</tr></thead>
-              <tbody>{l2items.length===0 ? <tr><td colSpan={17} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
+              <tbody>{l2items.length===0 ? <tr><td colSpan={19} className="p-4 text-sm text-gray-400">No SKUs match these filters.</td></tr> : l2items.map((it,idx) => {
                 const fzStyle = (id) => ({ position:'sticky', left:FZMAP[id].left, minWidth:FZMAP[id].w, width:FZMAP[id].w, maxWidth:FZMAP[id].w, overflow:'hidden', whiteSpace:wrapText?'normal':'nowrap', wordBreak:wrapText?'break-word':'normal', textOverflow:wrapText?'clip':'ellipsis', verticalAlign:'top', background:'#fff', zIndex:5, borderBottom:'1px solid #eef0f2' });
                 return (
                 <tr key={it.s.sku+idx} className={'align-middle'+(removeSkus[it.s.sku]?' opacity-50':'')}>
@@ -4026,6 +4041,7 @@
                     <select value={it.s.scale} onChange={e=>{const o={...scaleOverride,[it.s.sku]:e.target.value}; setScaleOverride(o); saveOverrides({scaleOverride:o});}} className={'border rounded px-1 py-0.5 text-xs '+(scaleOverride[it.s.sku]?'border-amber-400 text-amber-700':'')}>
                       {Object.keys(NSO_SCALES).map(n=> <option key={n} value={n}>{n}</option>)}
                     </select></td>
+                  <td className="px-2 py-2 text-center whitespace-nowrap text-gray-600" style={{borderBottom:'1px solid #eef0f2'}}>{it.s.deliveryMonth || <span className="text-gray-300">—</span>}</td>
                   <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>{(() => { const t=tracker[it.s.sku]||{}; if(t.inDc){ const dt=new Date(t.inDc+'T00:00:00'); if(!isNaN(dt)) return <span className="text-gray-600" style={{fontSize:'11px'}}>{(dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(2)}</span>; } return <span className="text-gray-300">—</span>; })()}</td>
                   <td className={'px-2 py-2 text-center '+(removeSkus[it.s.sku]?'bg-rose-100':'')} style={{borderBottom:'1px solid #eef0f2'}}>
                     <input type="checkbox" checked={!!removeSkus[it.s.sku]} onChange={()=>{const m={...removeSkus}; if(m[it.s.sku])delete m[it.s.sku]; else m[it.s.sku]=true; setRemoveSkus(m); saveOverrides({removeSkus:m});}} title="Flag this SKU's reserved units for removal" /></td>
@@ -4036,6 +4052,7 @@
                   <td className="px-2 py-2 text-center whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}>
                     <button onClick={()=>{const f={...forceSend}; if(f[it.s.sku])delete f[it.s.sku]; else f[it.s.sku]=true; setForceSend(f); saveOverrides({forceSend:f});}} className={'rounded px-1.5 py-0.5 border mr-1 '+(it.forced?'bg-amber-600 text-white border-amber-600':'text-gray-500')} style={{fontSize:'11px'}}>Force</button>
                     <span className="rounded px-1.5 py-0.5" style={{fontSize:'11px', ...stBadge(it.st)}}>{it.st}</span></td>
+                  <td className="px-2 py-2 text-xs text-gray-600" style={{borderBottom:'1px solid #eef0f2', maxWidth:190, whiteSpace:'normal', wordBreak:'break-word'}} title={(data.skuNotes&&data.skuNotes[it.s.sku])||''}>{(data.skuNotes&&data.skuNotes[it.s.sku])||<span className="text-gray-300">—</span>}</td>
                   <td className="px-1 py-1" style={{borderBottom:'1px solid #eef0f2'}}>
                     <input type="text" value={skuNotes[it.s.sku]||''} placeholder="Add note…" onChange={e=>{const v=e.target.value; const nn={...skuNotes}; if(v) nn[it.s.sku]=v; else delete nn[it.s.sku]; setSkuNotes(nn); saveOverrides({skuNotes:nn});}} className={'px-1.5 py-1 border rounded text-xs '+(skuNotes[it.s.sku]?'border-amber-300 bg-amber-50':'border-gray-200')} style={{minWidth:150}} /></td>
                   <td className="px-2 py-1 whitespace-nowrap" style={{borderBottom:'1px solid #eef0f2'}}><table className="inline-table"><tbody><tr>{it.cu.map((r,i)=>{
