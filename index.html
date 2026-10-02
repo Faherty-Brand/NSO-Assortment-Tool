@@ -3454,7 +3454,8 @@
           if(cs||ns){ oo=[cs,ns].filter(Boolean).sort()[0]; }
           else if(cOO>=0 && toISO(r[cOO])){ oo=toISO(r[cOO]); }
           else if(cInDC>=0 && toISO(r[cInDC])){ oo=toISO(r[cInDC]); }                       // ISR: Next In-DC (exact arrival date)
-          if(!oo) oo='N/A';   // no confirmed inbound (CS/NS OO or Next In-DC) → N/A → Broken, no Replen for status
+          else if(cDelv>=0){ const yh=(cYr>=0 && toISO(r[cYr]))?+toISO(r[cYr]).slice(0,4):null; oo=windowToISO(r[cDelv], yh); }   // fallback: Delivery/WIP window → ~mid-month, so it classifies as Arriving rather than Broken
+          if(!oo) oo='N/A';   // truly no inbound signal anywhere → Broken, no Replen for status
           const rawSt = cSt>=0?String(r[cSt]||'').trim():'';
           map[sku]={ oo, inDc: cInDC>=0?toISO(r[cInDC]):'', force: cF>=0 ? (String(r[cF]||'').trim().toUpperCase()==='X' || String(r[cF]).toLowerCase()==='true') : false, status: KNOWN_ST.includes(rawSt)?rawSt:'', delivery: cDelv>=0?String(r[cDelv]||'').trim():'' }; }
         persist({ allocTracker: map });
