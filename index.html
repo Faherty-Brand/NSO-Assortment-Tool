@@ -3281,6 +3281,7 @@
       const [expDiv, setExpDiv] = useState({});
       const [expCat, setExpCat] = useState({});
       const [resFilter, setResFilter] = useState('all'); // all | reserved | free
+      const [rsvScope, setRsvScope] = useState('all'); // all | filtered — scope of the reserve-need exports
       const [wrapText, setWrapText] = useState(false);   // wrap long text in the frozen identifier columns
       const [compact, setCompact] = useState(false);     // compact density for the size-level table
 
@@ -3719,8 +3720,10 @@
           if(!upc){ noUpc++; return; }
           const row = { Store: store, Division: info.div||'', Category: info.cat||'', 'Sub-Category': info.sub||'', SKU: sku, 'Style Description': info.style||'', 'Color Description': info.color||'', Size: size, UPC: upc, Qty: qty };
           if(mode==='reconcile') row.Action = action; lines.push(row); };
+        const filtered = rsvScope==='filtered';
+        const srcItems = filtered ? l2items : eng.items;
         // assortment SKUs — need per size from the demand curve; reserved from the file
-        eng.items.forEach(it => { const sku=it.s.sku; const flagged=!!removeSkus[sku];
+        srcItems.forEach(it => { const sku=it.s.sku; const flagged=!!removeSkus[sku];
           it.cu.forEach(c => { const size=c.size; seen[sku+'|'+size]=1;
             const need = flagged ? 0 : (c.ideal||0);
             const reserved = (reservedBySize[sku]&&reservedBySize[sku][size]&&reservedBySize[sku][size].qty)||0;
@@ -3733,7 +3736,8 @@
           });
         });
         // reserved for styles/sizes not in the assortment — remove in full (removal + reconcile)
-        if(mode==='removal'||mode==='reconcile'){
+        // only when exporting the full set; a filtered view is scoped to its visible rows
+        if((mode==='removal'||mode==='reconcile') && !filtered){
           Object.keys(reservedBySize).forEach(sku => Object.keys(reservedBySize[sku]).forEach(size => { if(seen[sku+'|'+size])return;
             push({ sku, size, ...(invMeta[sku]||{}) }, reservedBySize[sku][size].qty||0, 'Remove'); }));
         }
@@ -3744,7 +3748,7 @@
         XLSX.utils.book_append_sheet(wb, ws, 'Reserve');
         const nm = String(store).replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
         const mn = {scratch:'FromScratch',topup:'TopUp',removal:'Removal',reconcile:'Reconcile'}[mode];
-        XLSX.writeFile(wb, nm+'_Reserve_'+mn+'.xlsx');
+        XLSX.writeFile(wb, nm+'_Reserve_'+mn+(filtered?'_Filtered':'')+'.xlsx');
         if(noUpc) setTimeout(()=>alert(noUpc+' line(s) were skipped because no UPC was found in 42 Inventory for those sizes. Load 42 Inventory to include them.'),150);
       };
 
@@ -3931,6 +3935,14 @@
             <div className="flex items-center justify-between mb-3">
               <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Export Reserve Need</div>
               <span className="text-xs text-gray-400">Store: {(data.proFormaData&&data.proFormaData.newStoreName)||'—'} · UPCs from 42 Inventory{Object.keys(reservedBySize).length?'':' · (size-level reserved not loaded)'}</span>
+            </div>
+            <div className="flex items-center gap-3 mb-3 flex-wrap">
+              <span className="text-xs font-semibold text-gray-600">Scope:</span>
+              <div className="inline-flex text-xs border border-gray-300 rounded overflow-hidden">
+                <button onClick={()=>setRsvScope('all')} className={'px-3 py-1.5 '+(rsvScope==='all'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>All SKUs <span className="opacity-70">{eng.items.length}</span></button>
+                <button onClick={()=>setRsvScope('filtered')} className={'px-3 py-1.5 border-l '+(rsvScope==='filtered'?'bg-[#1C3554] text-white font-semibold':'bg-white text-gray-600 hover:bg-gray-50')}>Filtered view <span className="opacity-70">{l2items.length}</span></button>
+              </div>
+              {rsvScope==='filtered' && <span className="text-[11px] text-gray-500">Uses exactly the rows now showing in Layer 2 (every column filter + the reserved/not-reserved toggle). {l2items.length===eng.items.length ? 'No filter is active, so this matches All.' : 'Not-in-assortment reserved removals are omitted in this scope.'}</span>}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className="border border-gray-200 rounded-lg p-3 flex flex-col">
