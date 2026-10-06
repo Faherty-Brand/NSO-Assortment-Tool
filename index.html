@@ -3545,6 +3545,7 @@
         rows.forEach(r => { r.baseFinal=r.prop; if (depthAlt[r.k]>0){ r.overwrite=1; r.final=Math.round(depthAlt[r.k]*r.ct); } else { r.overwrite=0; r.final=r.baseFinal; } r.depth=r.ct?r.final/r.ct:0; r.sprinkled=r.final-r.minU; depthByKey[r.k]=r.depth; });
         // size-level items — ideal (Target) computed for EVERY SKU incl. reserved; Final coalesces reserved-else-target
         const items = []; const idealMap = {};
+        const grpAgg = {};   // group key -> {reserved, final} for the Layer 1 roll-up
         let finalActual = 0;
         keys.forEach(k => { G[k].skus.forEach(s => {
           const availBySize = inv && inv[s.sku] ? Object.fromEntries(Object.entries(inv[s.sku]).map(([sz,o])=>[sz,o.avail])) : null;
@@ -3563,8 +3564,11 @@
           const st = statusOf(s.sku, broken);
           idealMap[s.sku] = idealTot;
           finalActual += finalU;
+          if(!grpAgg[k]) grpAgg[k] = { reserved:0, final:0 };
+          grpAgg[k].reserved += reservedSku; grpAgg[k].final += finalU;
           items.push({ s, es:s.scale, cu, ideal:idealTot, net, reservedSku, isReserved, final:finalU, st, forced: !!forceSend[s.sku] });
         }); });
+        rows.forEach(r => { const a = grpAgg[r.k] || { reserved:0, final:0 }; r.reserved = a.reserved; r.finalOverlay = a.final; });
         return { rows, items, idealMap, reservedPool, totalTarget: rows.reduce((a,r)=>a+r.final,0), totalFinal: finalActual, noSignal };
       }, [assortment, data.allocSim, data.allocSimStores, weights, target, depthAlt, cap, forceSend, data.allocInv, data.allocTracker, allocDate, openDate, data.reservedUnits, data.reservedBySize, data.stdCurves, data.curveOverrides, sizeBias]);
 
@@ -3657,13 +3661,14 @@
       const tSkus = eng.rows.reduce((a,r)=>a+r.ct,0);
       const tRaw = eng.rows.reduce((a,r)=>a+r.raw,0);
       const tSpr = eng.rows.reduce((a,r)=>a+Math.max(0,r.sprinkled),0);
+      const showRsv = eng.reservedPool > 0;   // show Reserved U / Final U in Layer 1 only when a reserved file is loaded
       const l1tree = (() => {
         const divs = {};
         eng.rows.forEach(r => {
-          const d = divs[r.grp.div] || (divs[r.grp.div] = { div:r.grp.div, ct:0, raw:0, minU:0, maxU:0, sprinkled:0, final:0, demand:0, cats:{} });
-          d.ct+=r.ct; d.raw+=r.raw; d.minU+=r.minU; d.maxU+=r.maxU; d.sprinkled+=Math.max(0,r.sprinkled); d.final+=r.final; d.demand+=r.demand;
-          const c = d.cats[r.grp.cat] || (d.cats[r.grp.cat] = { cat:r.grp.cat, ct:0, raw:0, minU:0, maxU:0, sprinkled:0, final:0, demand:0, subs:[] });
-          c.ct+=r.ct; c.raw+=r.raw; c.minU+=r.minU; c.maxU+=r.maxU; c.sprinkled+=Math.max(0,r.sprinkled); c.final+=r.final; c.demand+=r.demand; c.subs.push(r);
+          const d = divs[r.grp.div] || (divs[r.grp.div] = { div:r.grp.div, ct:0, raw:0, minU:0, maxU:0, sprinkled:0, final:0, reserved:0, finalOverlay:0, demand:0, cats:{} });
+          d.ct+=r.ct; d.raw+=r.raw; d.minU+=r.minU; d.maxU+=r.maxU; d.sprinkled+=Math.max(0,r.sprinkled); d.final+=r.final; d.reserved+=r.reserved||0; d.finalOverlay+=r.finalOverlay||0; d.demand+=r.demand;
+          const c = d.cats[r.grp.cat] || (d.cats[r.grp.cat] = { cat:r.grp.cat, ct:0, raw:0, minU:0, maxU:0, sprinkled:0, final:0, reserved:0, finalOverlay:0, demand:0, subs:[] });
+          c.ct+=r.ct; c.raw+=r.raw; c.minU+=r.minU; c.maxU+=r.maxU; c.sprinkled+=Math.max(0,r.sprinkled); c.final+=r.final; c.reserved+=r.reserved||0; c.finalOverlay+=r.finalOverlay||0; c.demand+=r.demand; c.subs.push(r);
         });
         return divs;
       })();
@@ -3676,7 +3681,9 @@
         <td className="px-2 py-2 text-right">{(o.demand*100).toFixed(1)}%</td><td className="px-2 py-2 text-right text-gray-500">{fmt(o.raw)}</td>
         <td className="px-2 py-2 text-right text-gray-400">{fmt(o.minU)}</td><td className="px-2 py-2 text-right text-gray-400">{fmt(o.maxU)}</td>
         <td className={'px-2 py-2 text-right '+(o.sprinkled>0?'text-emerald-600':'text-gray-400')}>{o.sprinkled>0?'+'+fmt(o.sprinkled):'—'}</td>
+        {showRsv && <td className="px-2 py-2 text-right text-teal-700 font-semibold">{o.reserved>0?fmt(o.reserved):'—'}</td>}
         <td className="px-2 py-2 text-right font-semibold">{fmt(o.final)}</td>
+        {showRsv && <td className="px-2 py-2 text-right font-semibold text-gray-700">{fmt(o.finalOverlay)}</td>}
         <td></td><td className="px-2 py-2 text-right">{(o.ct?o.final/o.ct:0).toFixed(1)}</td>
         <td className="px-3 py-2 text-right">{target?(o.final/target*100).toFixed(0):0}%</td>
       </>);
@@ -3977,7 +3984,7 @@
               <th className="text-left px-3 py-2">Division</th><th className="text-left px-2 py-2">Category</th><th className="text-left px-2 py-2">Sub-Category</th>
               <th className="text-center px-2 py-2">SKUs</th><th className="text-center px-2 py-2">Scale</th>
               <th className="text-right px-2 py-2">Demand %</th><th className="text-right px-2 py-2">Raw U</th><th className="text-right px-2 py-2">Min U</th><th className="text-right px-2 py-2">Max U</th>
-              <th className="text-right px-2 py-2">Sprinkled</th><th className="text-right px-2 py-2">Target U</th><th className="text-center px-2 py-2">Depth Alt</th><th className="text-right px-2 py-2">Depth</th><th className="text-right px-3 py-2">% TTL</th>
+              <th className="text-right px-2 py-2">Sprinkled</th>{showRsv && <th className="text-right px-2 py-2">Reserved U</th>}<th className="text-right px-2 py-2">Target U</th>{showRsv && <th className="text-right px-2 py-2">Final U</th>}<th className="text-center px-2 py-2">Depth Alt</th><th className="text-right px-2 py-2">Depth</th><th className="text-right px-3 py-2">% TTL</th>
             </tr></thead>
             <tbody>{sortedDivs.map(dn => { const d=l1tree[dn]; const dOpen=!!expDiv[dn]; return (
               <React.Fragment key={dn}>
@@ -3999,7 +4006,9 @@
                         <td className="px-2 py-2 text-right">{(r.demand*100).toFixed(1)}%</td><td className="px-2 py-2 text-right text-gray-500">{fmt(r.raw)}</td>
                         <td className="px-2 py-2 text-right text-gray-400">{fmt(r.minU)}</td><td className="px-2 py-2 text-right text-gray-400">{fmt(r.maxU)}</td>
                         <td className={'px-2 py-2 text-right '+(r.sprinkled>0?'text-emerald-600':'text-gray-400')}>{r.sprinkled>0?'+'+fmt(r.sprinkled):'—'}</td>
+                        {showRsv && <td className="px-2 py-2 text-right text-teal-700 font-semibold">{r.reserved>0?fmt(r.reserved):'—'}</td>}
                         <td className="px-2 py-2 text-right font-semibold">{fmt(r.final)}</td>
+                        {showRsv && <td className="px-2 py-2 text-right font-semibold text-gray-700">{fmt(r.finalOverlay)}</td>}
                         <td className="px-2 py-2 text-center"><input type="number" value={depthAlt[r.k]||''} placeholder={r.depth.toFixed(0)} onClick={e=>e.stopPropagation()} onChange={e=>{const v=parseFloat(e.target.value); const dd={...depthAlt}; if(v>0)dd[r.k]=v; else delete dd[r.k]; setDepthAlt(dd); saveOverrides({depthAlt:dd});}} className={'w-14 border rounded px-1 py-0.5 text-xs '+(depthAlt[r.k]?'border-amber-400 text-amber-700':'')} /></td>
                         <td className="px-2 py-2 text-right">{r.depth.toFixed(1)}</td><td className="px-3 py-2 text-right">{target?(r.final/target*100).toFixed(0):0}%</td>
                       </tr>
@@ -4012,7 +4021,9 @@
               <td className="px-3 py-2" colSpan={3}>Grand Total</td><td className="px-2 py-2 text-center">{fmt(tSkus)}</td><td></td>
               <td className="px-2 py-2 text-right">100%</td><td className="px-2 py-2 text-right">{fmt(tRaw)}</td><td></td><td></td>
               <td className="px-2 py-2 text-right">+{fmt(tSpr)}</td>
+              {showRsv && <td className="px-2 py-2 text-right text-teal-700">{fmt(eng.reservedPool)}</td>}
               <td className="px-2 py-2 text-right">{fmt(tFinal)} <span className={'text-xs font-normal '+(tFinal===target?'text-emerald-600':'text-red-600')}>{tFinal===target?'= target':(tFinal>target?'+':'')+fmt(tFinal-target)}</span></td>
+              {showRsv && <td className="px-2 py-2 text-right">{fmt(eng.totalFinal)}</td>}
               <td></td><td></td><td className="px-3 py-2 text-right">{target?Math.round(tFinal/target*100)+'%':'—'}</td>
             </tr></tfoot>
           </table></div>
