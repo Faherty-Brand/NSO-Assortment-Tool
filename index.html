@@ -3763,7 +3763,7 @@
             rows.push({
               Division: it.s.div, Category: it.s.cat, 'Sub-Category': it.s.sub,
               SKU: sku, 'Style Description': it.s.style, 'Color Description': it.s.color,
-              Scale: it.s.scale, Status: it.st, 'Next In-DC': (tracker[sku]&&tracker[sku].inDc)||'',
+              Scale: it.s.scale, Delivery: it.s.deliveryMonth||'', Status: it.st, 'Next In-DC': (tracker[sku]&&tracker[sku].inDc)||'',
               Size: size, UPC: upc,
               'Target Units': tgt, 'Reserved Units': rbs, 'Whse Available': av,
               'Net Units': Math.max(0, tgt-rbs), 'Final Units': it.isReserved ? rbs : tgt,
@@ -3773,8 +3773,8 @@
         });
         if (!rows.length){ alert('No size-level rows to export.'); return; }
         const wb = XLSX.utils.book_new(); const ws = XLSX.utils.json_to_sheet(rows);
-        ws['!cols'] = [{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:12},{wch:16},{wch:10},{wch:9},{wch:15},{wch:11},{wch:13},{wch:13},{wch:10},{wch:11},{wch:8},{wch:24}];
-        (function(){ const rng=XLSX.utils.decode_range(ws['!ref']); for(let R=rng.s.r+1;R<=rng.e.r;R++){ const ref=XLSX.utils.encode_cell({r:R,c:10}); const cell=ws[ref]; if(cell&&cell.v!=null&&cell.v!==''){ cell.t='s'; cell.v=String(cell.v); cell.z='@'; } } })();
+        ws['!cols'] = [{wch:10},{wch:12},{wch:14},{wch:16},{wch:24},{wch:16},{wch:12},{wch:12},{wch:16},{wch:10},{wch:9},{wch:15},{wch:11},{wch:13},{wch:13},{wch:10},{wch:11},{wch:8},{wch:24}];
+        (function(){ const rng=XLSX.utils.decode_range(ws['!ref']); for(let R=rng.s.r+1;R<=rng.e.r;R++){ const ref=XLSX.utils.encode_cell({r:R,c:11}); const cell=ws[ref]; if(cell&&cell.v!=null&&cell.v!==''){ cell.t='s'; cell.v=String(cell.v); cell.z='@'; } } })();
         XLSX.utils.book_append_sheet(wb, ws, 'Size-Level Allocation');
         const nm = (data.proFormaData?.newStoreName || 'NSO').replace(/[^a-zA-Z0-9 ]/g,'').replace(/\s+/g,'_');
         XLSX.writeFile(wb, nm + '_SizeLevel_Allocation.xlsx');
