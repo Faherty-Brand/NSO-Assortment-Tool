@@ -850,9 +850,12 @@
     // serial 46307 (= 2026-10-12) or a date string; convert those back to "M/D" so feed sizes match the scale.
     // Real apparel sizes never reach the Excel-serial range, so numeric sizes (8, 32, etc.) are left untouched.
     const nsoNormSize = (v) => {
+      if (v instanceof Date && !isNaN(v)) return (v.getUTCMonth()+1)+'/'+v.getUTCDate();   // some parsers hand back a Date object
       const s = String(v==null?'':v).trim();
       if (!s) return s;
-      if (/^\d{5}$/.test(s)) { const n=+s; if (n>=40000 && n<=60000) { const d=new Date(Math.round((n-25569)*86400*1000)); if(!isNaN(d)) return (d.getUTCMonth()+1)+'/'+d.getUTCDate(); } }
+      // Spreadsheet readers coerce a size like "10/12" into an Excel date serial (e.g. 37176=2001-10-12 or 46307=2026-10-12).
+      // No real apparel size is ≥ 1000, so any bare integer in the Excel-date range is a coerced date → recover its month/day.
+      if (/^\d{4,6}$/.test(s)) { const n=+s; if (n>=1000 && n<=100000) { const d=new Date(Math.round((n-25569)*86400*1000)); if(!isNaN(d.getTime())) return (d.getUTCMonth()+1)+'/'+d.getUTCDate(); } }
       let m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/.exec(s); if (m) return (+m[2])+'/'+(+m[3]);
       m = /^(\d{1,2})\/(\d{1,2})\/\d{2,4}$/.exec(s); if (m) return (+m[1])+'/'+(+m[2]);
       return s;
