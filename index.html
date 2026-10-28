@@ -846,6 +846,17 @@
     };
     const NSO_MATRIX_URL = 'https://script.google.com/a/macros/fahertybrand.com/s/AKfycby8Z67jCeRScKJRxQHJfxd_Hnzw6USsNbTnu0pA9xd5xAEVMV0fIorwaZe0AoCJa0PB/exec';
     const nsoSMM = (name) => { const a = NSO_SCALES[name]; if (!a) return [0,0]; const mx = a.reduce((x,r)=>x+r[3],0); const mn = Math.min(a.length===1 ? 3 : Math.floor(a.length*1.3), mx); return [mn, mx]; };
+    // Recover a size label that Excel coerced into a date. A bare size like "10/12" gets stored as the
+    // serial 46307 (= 2026-10-12) or a date string; convert those back to "M/D" so feed sizes match the scale.
+    // Real apparel sizes never reach the Excel-serial range, so numeric sizes (8, 32, etc.) are left untouched.
+    const nsoNormSize = (v) => {
+      const s = String(v==null?'':v).trim();
+      if (!s) return s;
+      if (/^\d{5}$/.test(s)) { const n=+s; if (n>=40000 && n<=60000) { const d=new Date(Math.round((n-25569)*86400*1000)); if(!isNaN(d)) return (d.getUTCMonth()+1)+'/'+d.getUTCDate(); } }
+      let m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/.exec(s); if (m) return (+m[2])+'/'+(+m[3]);
+      m = /^(\d{1,2})\/(\d{1,2})\/\d{2,4}$/.exec(s); if (m) return (+m[1])+'/'+(+m[2]);
+      return s;
+    };
     // size ordering axis for the runs-small/large shift: waist for pants (32WX30L→32), the number for numeric scales, else alpha order
     const NSO_ALPHA = ['XXS','XS','S','M','L','XL','XXL','XXXL'];
     const nsoSizeRank = (label) => {
@@ -3369,7 +3380,7 @@
         const useOnline = cLoc>=0 && data2.some(r=>Array.isArray(r) && String(r[cLoc]||'').trim().toLowerCase()==='online');
         const map = {}, meta = {};
         for (const r of data2){ if(!Array.isArray(r))continue;
-          const sku=String(r[cS]||'').trim(); const size=String(r[cSize]||'').trim(); if(!sku||!size)continue;
+          const sku=String(r[cS]||'').trim(); const size=nsoNormSize(r[cSize]); if(!sku||!size)continue;
           if (!meta[sku]) meta[sku] = { div:cDiv>=0?String(r[cDiv]||'').trim():'', cat:cCat>=0?String(r[cCat]||'').trim():'', sub:cSub>=0?String(r[cSub]||'').trim():'', style:cStyle>=0?String(r[cStyle]||'').trim():'', color:cColor>=0?String(r[cColor]||'').trim():'' };
           if (useOnline && String(r[cLoc]||'').trim().toLowerCase()!=='online') continue;
           const av = cAv>=0?(Number(r[cAv])||0):0; const upc = cU>=0?String(r[cU]||''):'';
@@ -3408,7 +3419,7 @@
         const map = {}, bySize = {};
         for (let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!Array.isArray(r))continue; const raw=String(r[cS]||'').trim(); if(!raw)continue;
           const sku = stripSize ? styleColor(raw) : raw;
-          const size = cSz>=0 ? String(r[cSz]||'').trim() : (stripSize ? sizeFromWith(raw) : '');
+          const size = cSz>=0 ? nsoNormSize(r[cSz]) : (stripSize ? nsoNormSize(sizeFromWith(raw)) : '');
           const upc = cU>=0 ? String(r[cU]||'').trim() : '';
           const v = parseInt(r[cR])||0; if(!v) continue;
           map[sku] = (map[sku]||0) + v;
